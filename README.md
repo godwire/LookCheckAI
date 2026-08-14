@@ -22,9 +22,10 @@ weather to suggest what to wear — every day, or for a specific event.
 ## Screenshots
 
 <p align="center">
-  <img src="./screenshot-onboarding.png" width="250" alt="Onboarding screen" />
-  <img src="./screenshot-today.png" width="250" alt="Today's Look screen" />
-  <img src="./screenshot-wardrobe.png" width="250" alt="Wardrobe screen" />
+  <img src=".demo/demo-1.jpg" width="250" alt="Onboarding screen" />
+  <img src=".demo/demo-2.jpg" width="250" alt="Today's Look screen" />
+  <img src=".demo/demo-3.jpg" width="250" alt="Wardrobe screen" />
+  <img src=".demo/demo-4.jpg" width="250" alt="Wardrobe screen" />
 </p>
 
 ## Architecture
