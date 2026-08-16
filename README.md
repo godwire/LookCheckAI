@@ -5,7 +5,7 @@
 The project explores how structured wardrobe information, environmental conditions, user preferences, and large language model reasoning can be combined to generate practical outfit recommendations from clothes that the user actually owns.
 
 > **Project status:** Active development  
-> LookCheckAI is currently a functional prototype. Core application flows are implemented, while recommendation logic, AI-assisted clothing analysis, personalization, testing, and deployment are still being developed.
+> LookCheckAI is currently a functional prototype. Core application flows are implemented, while recommendation logic, AI-assisted clothing analysis, personalization, testing, and deployment are still being developed 
 
 ---
 
