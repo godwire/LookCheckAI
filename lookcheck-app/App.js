@@ -2,10 +2,12 @@ import React from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { Text } from 'react-native';
+import { ActivityIndicator, Text, View, StyleSheet } from 'react-native';
+import { StatusBar } from 'expo-status-bar';
 
-import { UserProvider, useUser } from './src/context/UserContext';
-import OnboardingScreen from './src/screens/OnboardingScreen';
+import { AuthProvider, useAuth } from './src/context/AuthContext';
+import LoginScreen from './src/screens/LoginScreen';
+import RegisterScreen from './src/screens/RegisterScreen';
 import TodayLookScreen from './src/screens/TodayLookScreen';
 import EventLookScreen from './src/screens/EventLookScreen';
 import WardrobeScreen from './src/screens/WardrobeScreen';
@@ -14,6 +16,7 @@ import SettingsScreen from './src/screens/SettingsScreen';
 
 const Tab = createBottomTabNavigator();
 const WardrobeStack = createNativeStackNavigator();
+const AuthStack = createNativeStackNavigator();
 
 const TAB_ICONS = {
   Today: '☀️',
@@ -49,22 +52,44 @@ function MainTabs() {
   );
 }
 
-function RootNavigator() {
-  const { user, loading } = useUser();
+function AuthFlow() {
+  return (
+    <AuthStack.Navigator screenOptions={{ headerShown: false }}>
+      <AuthStack.Screen name="Login" component={LoginScreen} />
+      <AuthStack.Screen name="Register" component={RegisterScreen} />
+    </AuthStack.Navigator>
+  );
+}
 
-  if (loading) return null; // could show a splash screen here
+function RootNavigator() {
+  const { user, loading } = useAuth();
+
+  if (loading) {
+    return (
+      <View style={styles.splash}>
+        <Text style={styles.splashTitle}>👗 LookCheck AI</Text>
+        <ActivityIndicator size="large" color="#1a1a1a" style={{ marginTop: 16 }} />
+      </View>
+    );
+  }
 
   return (
     <NavigationContainer>
-      {user ? <MainTabs /> : <OnboardingScreen />}
+      {user ? <MainTabs /> : <AuthFlow />}
     </NavigationContainer>
   );
 }
 
 export default function App() {
   return (
-    <UserProvider>
+    <AuthProvider>
+      <StatusBar style="dark" />
       <RootNavigator />
-    </UserProvider>
+    </AuthProvider>
   );
 }
+
+const styles = StyleSheet.create({
+  splash: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#fff' },
+  splashTitle: { fontSize: 26, fontWeight: '800' },
+});

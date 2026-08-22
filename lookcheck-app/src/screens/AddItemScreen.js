@@ -4,26 +4,27 @@ import {
   Image, ActivityIndicator, Alert, ScrollView,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
-import { useUser } from '../context/UserContext';
-import { api } from '../api/client';
 
-const CATEGORIES = ['top', 'bottom', 'outerwear', 'footwear', 'accessory'];
+import { useAuth } from '../context/AuthContext';
+import { api, ApiError } from '../api/client';
+import { CLOTHING_CATEGORIES } from '../config';
 
 export default function AddItemScreen({ navigation }) {
-  const { user } = useUser();
-  const [mode, setMode] = useState(null); // 'photo' | 'link' | null
+  const { user, setAiConsent } = useAuth();
+  const [mode, setMode] = useState(null); // 'photo' | 'link' | 'manual' | null
   const [photoUri, setPhotoUri] = useState(null);
   const [linkUrl, setLinkUrl] = useState('');
   const [analyzing, setAnalyzing] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  // Editable fields, pre-filled by AI after photo/link analysis (or filled manually)
+  // Editable fields, pre-filled by AI after photo/link analysis, or typed manually.
   const [category, setCategory] = useState('top');
   const [color, setColor] = useState('');
   const [style, setStyle] = useState('');
   const [warmthLevel, setWarmthLevel] = useState(3);
   const [description, setDescription] = useState('');
   const [sourceLink, setSourceLink] = useState(null);
+  const [imageUrl, setImageUrl] = useState(null);
   const [analyzed, setAnalyzed] = useState(false);
 
   async function handlePickPhoto() {
@@ -32,8 +33,9 @@ export default function AddItemScreen({ navigation }) {
       Alert.alert('Permission needed', 'Please allow photo library access to add wardrobe items.');
       return;
     }
+    // `MediaTypeOptions` was removed in Expo SDK 54 - the array form replaces it.
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ['images'],
       quality: 0.7,
     });
     if (result.canceled) return;
@@ -50,7 +52,7 @@ export default function AddItemScreen({ navigation }) {
       Alert.alert('Permission needed', 'Please allow camera access to add wardrobe items.');
       return;
     }
-    const result = await ImagePicker.launchCameraAsync({ quality: 0.7 });
+    const result = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.7 });
     if (result.canceled) return;
 
     const uri = result.assets[0].uri;
@@ -59,35 +61,61 @@ export default function AddItemScreen({ navigation }) {
     await analyzePhoto(uri);
   }
 
+  /** The backend refuses AI analysis until the user has opted in. */
+  function offerConsent(retry) {
+    Alert.alert(
+      'Allow AI analysis?',
+      'To recognise your clothes automatically, the image or product page is sent to an external AI provider. Nothing is sent until you agree.',
+      [
+        { text: 'Not now', style: 'cancel' },
+        {
+          text: 'Allow',
+          onPress: async () => {
+            try {
+              await setAiConsent(true);
+              await retry();
+            } catch (err) {
+              Alert.alert('Could not save your choice', err.message);
+            }
+          },
+        },
+      ]
+    );
+  }
+
+  function handleAnalysisError(err, retry) {
+    if (err instanceof ApiError && err.status === 403) {
+      offerConsent(retry);
+      return;
+    }
+    Alert.alert(
+      'AI analysis unavailable',
+      `${err.message}\n\nYou can still fill in the details manually below.`
+    );
+  }
+
   async function analyzePhoto(uri) {
     setAnalyzing(true);
     try {
-      const attrs = await api.analyzePhoto(user.id, uri);
-      applyAttributes(attrs);
+      applyAttributes(await api.analyzePhoto(uri));
     } catch (err) {
-      Alert.alert(
-        'AI analysis unavailable',
-        `${err.message}\n\nYou can still fill in the details manually below.`
-      );
+      handleAnalysisError(err, () => analyzePhoto(uri));
     } finally {
       setAnalyzing(false);
     }
   }
 
   async function handleAnalyzeLink() {
-    if (!linkUrl.trim()) {
+    const url = linkUrl.trim();
+    if (!url) {
       Alert.alert('Enter a link', 'Paste a product page URL first.');
       return;
     }
     setAnalyzing(true);
     try {
-      const attrs = await api.parseLink(linkUrl.trim());
-      applyAttributes(attrs);
+      applyAttributes(await api.parseLink(url));
     } catch (err) {
-      Alert.alert(
-        'AI analysis unavailable',
-        `${err.message}\n\nYou can still fill in the details manually below.`
-      );
+      handleAnalysisError(err, handleAnalyzeLink);
     } finally {
       setAnalyzing(false);
     }
@@ -100,6 +128,11 @@ export default function AddItemScreen({ navigation }) {
     if (attrs.warmth_level) setWarmthLevel(attrs.warmth_level);
     if (attrs.description) setDescription(attrs.description);
     if (attrs.source_link) setSourceLink(attrs.source_link);
+    // Links often expose a product photo; show it and keep it with the item.
+    if (attrs.image_url) {
+      setImageUrl(attrs.image_url);
+      if (!photoUri) setPhotoUri(attrs.image_url);
+    }
     setAnalyzed(true);
   }
 
@@ -110,13 +143,14 @@ export default function AddItemScreen({ navigation }) {
     }
     setSaving(true);
     try {
-      await api.addWardrobeItem(user.id, {
+      await api.addWardrobeItem({
         category,
         color: color.trim(),
         style: style.trim(),
         warmth_level: warmthLevel,
         description: description.trim() || null,
         source_link: sourceLink,
+        image_url: imageUrl,
       });
       navigation.goBack();
     } catch (err) {
@@ -127,7 +161,13 @@ export default function AddItemScreen({ navigation }) {
   }
 
   return (
-    <ScrollView style={styles.container}>
+    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+      <View style={styles.headerRow}>
+        <TouchableOpacity onPress={() => navigation.goBack()}>
+          <Text style={styles.back}>‹ Back</Text>
+        </TouchableOpacity>
+      </View>
+
       <Text style={styles.heading}>Add to Wardrobe</Text>
 
       {!mode && (
@@ -144,6 +184,10 @@ export default function AddItemScreen({ navigation }) {
             <Text style={styles.modeButtonIcon}>🔗</Text>
             <Text style={styles.modeButtonText}>Paste a product link</Text>
           </TouchableOpacity>
+          <TouchableOpacity style={styles.modeButton} onPress={() => setMode('manual')}>
+            <Text style={styles.modeButtonIcon}>✏️</Text>
+            <Text style={styles.modeButtonText}>Enter details manually</Text>
+          </TouchableOpacity>
         </View>
       )}
 
@@ -155,6 +199,8 @@ export default function AddItemScreen({ navigation }) {
             value={linkUrl}
             onChangeText={setLinkUrl}
             autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="url"
           />
           <TouchableOpacity style={styles.primaryButton} onPress={handleAnalyzeLink}>
             <Text style={styles.primaryButtonText}>Analyze link</Text>
@@ -171,11 +217,11 @@ export default function AddItemScreen({ navigation }) {
         </View>
       )}
 
-      {(mode && !analyzing) && (
+      {mode && !analyzing && (
         <View style={styles.form}>
           <Text style={styles.label}>Category</Text>
           <View style={styles.chipRow}>
-            {CATEGORIES.map((c) => (
+            {CLOTHING_CATEGORIES.map((c) => (
               <TouchableOpacity
                 key={c}
                 style={[styles.chip, category === c && styles.chipActive]}
@@ -187,10 +233,20 @@ export default function AddItemScreen({ navigation }) {
           </View>
 
           <Text style={styles.label}>Color</Text>
-          <TextInput style={styles.input} value={color} onChangeText={setColor} placeholder="e.g. Navy blue" />
+          <TextInput
+            style={styles.input}
+            value={color}
+            onChangeText={setColor}
+            placeholder="e.g. Navy blue"
+          />
 
           <Text style={styles.label}>Style</Text>
-          <TextInput style={styles.input} value={style} onChangeText={setStyle} placeholder="e.g. Minimalist" />
+          <TextInput
+            style={styles.input}
+            value={style}
+            onChangeText={setStyle}
+            placeholder="e.g. Minimalist"
+          />
 
           <Text style={styles.label}>Warmth level: {warmthLevel}/5</Text>
           <View style={styles.chipRow}>
@@ -221,7 +277,9 @@ export default function AddItemScreen({ navigation }) {
             onPress={handleSave}
             disabled={saving}
           >
-            <Text style={styles.primaryButtonText}>{saving ? 'Saving...' : 'Save to wardrobe'}</Text>
+            <Text style={styles.primaryButtonText}>
+              {saving ? 'Saving...' : 'Save to wardrobe'}
+            </Text>
           </TouchableOpacity>
         </View>
       )}
@@ -230,9 +288,12 @@ export default function AddItemScreen({ navigation }) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#fff', padding: 20, paddingTop: 60 },
+  container: { flex: 1, backgroundColor: '#fff' },
+  content: { padding: 20, paddingTop: 60, paddingBottom: 40 },
+  headerRow: { marginBottom: 8 },
+  back: { fontSize: 16, color: '#1a1a1a', fontWeight: '600' },
   heading: { fontSize: 26, fontWeight: '800', marginBottom: 24 },
-  modeButtons: { gap: 12 },
+  modeButtons: {},
   modeButton: {
     flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: '#ddd',
     borderRadius: 12, padding: 16, marginBottom: 12,
@@ -251,8 +312,10 @@ const styles = StyleSheet.create({
   centered: { alignItems: 'center', paddingVertical: 30 },
   analyzingText: { marginTop: 10, color: '#888' },
   form: { marginTop: 8 },
-  label: { fontSize: 13, fontWeight: '600', color: '#333', marginBottom: 8, textTransform: 'uppercase' },
-  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 16 },
+  label: {
+    fontSize: 13, fontWeight: '600', color: '#333', marginBottom: 8, textTransform: 'uppercase',
+  },
+  chipRow: { flexDirection: 'row', flexWrap: 'wrap', marginBottom: 16 },
   chip: {
     borderWidth: 1, borderColor: '#ddd', borderRadius: 20,
     paddingVertical: 8, paddingHorizontal: 14, marginRight: 8, marginBottom: 8,

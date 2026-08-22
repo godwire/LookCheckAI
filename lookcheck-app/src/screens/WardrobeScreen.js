@@ -1,27 +1,24 @@
 import React, { useCallback, useState } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, Alert } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import { useUser } from '../context/UserContext';
+
 import { api } from '../api/client';
 import ClothingCard from '../components/ClothingCard';
 
 export default function WardrobeScreen({ navigation }) {
-  const { user } = useUser();
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
 
   const loadWardrobe = useCallback(async () => {
-    if (!user) return;
     setLoading(true);
     try {
-      const wardrobe = await api.getWardrobe(user.id);
-      setItems(wardrobe);
+      setItems(await api.getWardrobe());
     } catch (err) {
       Alert.alert('Could not load wardrobe', err.message);
     } finally {
       setLoading(false);
     }
-  }, [user]);
+  }, []);
 
   useFocusEffect(
     useCallback(() => {
@@ -29,25 +26,40 @@ export default function WardrobeScreen({ navigation }) {
     }, [loadWardrobe])
   );
 
+  function confirmDelete(item) {
+    Alert.alert(
+      'Remove item',
+      `Remove the ${item.color.toLowerCase()} ${item.category} from your wardrobe?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Remove', style: 'destructive', onPress: () => handleDelete(item.id) },
+      ]
+    );
+  }
+
   async function handleDelete(itemId) {
+    const snapshot = items;
+    setItems((prev) => prev.filter((i) => i.id !== itemId));
     try {
-      await api.deleteWardrobeItem(user.id, itemId);
-      setItems((prev) => prev.filter((i) => i.id !== itemId));
+      await api.deleteWardrobeItem(itemId);
     } catch (err) {
+      setItems(snapshot);
       Alert.alert('Could not delete item', err.message);
     }
   }
 
-  if (!user) return null;
-
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.heading}>My Wardrobe</Text>
-        <TouchableOpacity
-          style={styles.addButton}
-          onPress={() => navigation.navigate('AddItem')}
-        >
+        <View>
+          <Text style={styles.heading}>My Wardrobe</Text>
+          {items.length > 0 && (
+            <Text style={styles.count}>
+              {items.length} {items.length === 1 ? 'item' : 'items'}
+            </Text>
+          )}
+        </View>
+        <TouchableOpacity style={styles.addButton} onPress={() => navigation.navigate('AddItem')}>
           <Text style={styles.addButtonText}>+ Add</Text>
         </TouchableOpacity>
       </View>
@@ -64,10 +76,11 @@ export default function WardrobeScreen({ navigation }) {
           data={items}
           keyExtractor={(item) => String(item.id)}
           renderItem={({ item }) => (
-            <ClothingCard item={item} onDelete={() => handleDelete(item.id)} />
+            <ClothingCard item={item} onDelete={() => confirmDelete(item)} />
           )}
           onRefresh={loadWardrobe}
           refreshing={loading}
+          contentContainerStyle={styles.list}
         />
       )}
     </View>
@@ -81,9 +94,15 @@ const styles = StyleSheet.create({
     alignItems: 'center', marginBottom: 20,
   },
   heading: { fontSize: 28, fontWeight: '800' },
-  addButton: { backgroundColor: '#1a1a1a', borderRadius: 20, paddingVertical: 8, paddingHorizontal: 16 },
+  count: { fontSize: 13, color: '#888', marginTop: 2 },
+  addButton: {
+    backgroundColor: '#1a1a1a', borderRadius: 20, paddingVertical: 8, paddingHorizontal: 16,
+  },
   addButtonText: { color: '#fff', fontWeight: '700' },
   emptyState: { alignItems: 'center', paddingTop: 60 },
   emptyText: { fontSize: 16, fontWeight: '600', color: '#333' },
-  emptySubtext: { fontSize: 13, color: '#888', marginTop: 6, textAlign: 'center', paddingHorizontal: 40 },
+  emptySubtext: {
+    fontSize: 13, color: '#888', marginTop: 6, textAlign: 'center', paddingHorizontal: 40,
+  },
+  list: { paddingBottom: 20 },
 });

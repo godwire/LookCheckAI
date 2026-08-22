@@ -6,11 +6,13 @@
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "splash": {
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#ffffff",
+      "resizeMode": "contain"
     },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.godwire.lookcheckai",
+      "buildNumber": "1",
       "infoPlist": {
         "NSCameraUsageDescription": "LookCheck AI uses your camera to add clothing items to your digital wardrobe.",
         "NSPhotoLibraryUsageDescription": "LookCheck AI uses your photo library to add clothing items to your digital wardrobe.",
@@ -19,7 +21,13 @@
     },
     "android": {
       "package": "com.godwire.lookcheckai",
-      "permissions": ["CAMERA", "READ_EXTERNAL_STORAGE", "ACCESS_FINE_LOCATION"]
+      "versionCode": 1,
+      "permissions": ["CAMERA", "ACCESS_COARSE_LOCATION", "ACCESS_FINE_LOCATION"],
+      "edgeToEdgeEnabled": true
+    },
+    "extra": {
+      "_comment": "Leave apiBaseUrl empty during development - the app detects your computer's address automatically. Set it to your deployed backend URL (https://...) before building for the stores.",
+      "apiBaseUrl": ""
     }
   }
 }
