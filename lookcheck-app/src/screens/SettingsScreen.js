@@ -6,6 +6,7 @@ import * as Location from 'expo-location';
 
 import { useAuth } from '../context/AuthContext';
 import { STYLE_OPTIONS } from '../config';
+import { colors, space, radius, type } from '../theme';
 
 export default function SettingsScreen() {
   const { user, updateProfile, updateLocation, setAiConsent, signOut, deleteAccount } = useAuth();
@@ -14,10 +15,9 @@ export default function SettingsScreen() {
   async function handleChangeLocation() {
     const { status } = await Location.requestForegroundPermissionsAsync();
     if (status !== 'granted') {
-      Alert.alert('Permission needed', 'Location access is required to update your location.');
+      Alert.alert('Location is off', 'Turn on location access to match outfits to local weather.');
       return;
     }
-
     setUpdating(true);
     try {
       const position = await Location.getCurrentPositionAsync({});
@@ -26,15 +26,9 @@ export default function SettingsScreen() {
         longitude: position.coords.longitude,
       });
       const city = places[0]?.city || places[0]?.region || null;
-
-      await updateLocation({
-        city,
-        lat: position.coords.latitude,
-        lon: position.coords.longitude,
-      });
-      Alert.alert('Location updated', city || 'Location saved');
+      await updateLocation({ city, lat: position.coords.latitude, lon: position.coords.longitude });
     } catch (err) {
-      Alert.alert('Could not update location', err.message);
+      Alert.alert('Location not updated', err.message);
     } finally {
       setUpdating(false);
     }
@@ -44,7 +38,7 @@ export default function SettingsScreen() {
     try {
       await updateProfile({ style_preference: style });
     } catch (err) {
-      Alert.alert('Could not update style', err.message);
+      Alert.alert('Style not updated', err.message);
     }
   }
 
@@ -52,28 +46,27 @@ export default function SettingsScreen() {
     try {
       await setAiConsent(granted);
     } catch (err) {
-      Alert.alert('Could not save your choice', err.message);
+      Alert.alert('Choice not saved', err.message);
     }
   }
 
   function confirmSignOut() {
-    Alert.alert('Sign out', 'You can sign back in at any time.', [
-      { text: 'Cancel', style: 'cancel' },
+    Alert.alert('Sign out?', 'Your wardrobe stays on your account.', [
+      { text: 'Stay', style: 'cancel' },
       { text: 'Sign out', style: 'destructive', onPress: signOut },
     ]);
   }
 
   /**
    * Both stores require account deletion to be available inside the app, not
-   * just as a link to a website. This removes the account and everything
-   * attached to it on the server.
+   * only as a link to a website.
    */
   function confirmDeleteAccount() {
     Alert.alert(
-      'Delete account',
-      'This permanently deletes your account, your wardrobe and your outfit history. This cannot be undone.',
+      'Delete your account?',
+      'Your account, wardrobe and outfit history are removed for good. This cannot be undone.',
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: 'Keep my account', style: 'cancel' },
         {
           text: 'Delete everything',
           style: 'destructive',
@@ -81,7 +74,7 @@ export default function SettingsScreen() {
             try {
               await deleteAccount();
             } catch (err) {
-              Alert.alert('Could not delete account', err.message);
+              Alert.alert('Not deleted', err.message);
             }
           },
         },
@@ -92,90 +85,94 @@ export default function SettingsScreen() {
   if (!user) return null;
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <Text style={styles.heading}>Settings</Text>
+    <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+      <Text style={styles.eyebrow}>{user.email}</Text>
+      <Text style={styles.display}>{user.name}</Text>
 
-      <View style={styles.section}>
-        <Text style={styles.sectionLabel}>Account</Text>
-        <Text style={styles.value}>{user.name}</Text>
-        <Text style={styles.muted}>{user.email}</Text>
-      </View>
-
-      <View style={styles.section}>
-        <Text style={styles.sectionLabel}>Style preference</Text>
-        <View style={styles.chipRow}>
-          {STYLE_OPTIONS.map((s) => (
-            <TouchableOpacity
-              key={s}
-              style={[styles.chip, user.style_preference === s && styles.chipActive]}
-              onPress={() => handleChangeStyle(s)}
+      <Text style={styles.sectionLabel}>How you dress</Text>
+      <View style={styles.chips}>
+        {STYLE_OPTIONS.map((option) => (
+          <TouchableOpacity
+            key={option}
+            style={[styles.chip, user.style_preference === option && styles.chipActive]}
+            onPress={() => handleChangeStyle(option)}
+          >
+            <Text
+              style={[styles.chipText, user.style_preference === option && styles.chipTextActive]}
             >
-              <Text
-                style={[styles.chipText, user.style_preference === s && styles.chipTextActive]}
-              >
-                {s}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-      </View>
-
-      <View style={styles.section}>
-        <Text style={styles.sectionLabel}>Location</Text>
-        <Text style={styles.value}>{user.city || 'Not set'}</Text>
-        <TouchableOpacity style={styles.button} onPress={handleChangeLocation} disabled={updating}>
-          <Text style={styles.buttonText}>
-            {updating ? 'Updating...' : 'Update to current location'}
-          </Text>
-        </TouchableOpacity>
-      </View>
-
-      <View style={styles.section}>
-        <View style={styles.switchRow}>
-          <View style={styles.switchLabel}>
-            <Text style={styles.sectionLabel}>AI analysis</Text>
-            <Text style={styles.muted}>
-              Allow photos and product links to be sent to an external AI provider so clothing can
-              be recognised automatically. Outfit suggestions work without this.
+              {option}
             </Text>
-          </View>
-          <Switch value={!!user.ai_consent_at} onValueChange={handleToggleConsent} />
-        </View>
+          </TouchableOpacity>
+        ))}
       </View>
 
-      <TouchableOpacity style={styles.signOutButton} onPress={confirmSignOut}>
-        <Text style={styles.signOutText}>Sign out</Text>
+      <View style={styles.divider} />
+
+      <Text style={styles.sectionLabel}>Location</Text>
+      <Text style={styles.value}>{user.city || 'Not set'}</Text>
+      <TouchableOpacity onPress={handleChangeLocation} disabled={updating}>
+        <Text style={styles.action}>
+          {updating ? 'Updating…' : 'Use my current location'}
+        </Text>
       </TouchableOpacity>
 
-      <TouchableOpacity style={styles.deleteButton} onPress={confirmDeleteAccount}>
-        <Text style={styles.deleteText}>Delete my account</Text>
+      <View style={styles.divider} />
+
+      <View style={styles.switchRow}>
+        <View style={styles.switchText}>
+          <Text style={styles.sectionLabel}>AI recognition</Text>
+          <Text style={styles.help}>
+            Sends photos and shop links to an external AI provider so garments are recognised
+            automatically. Outfit matching works without it.
+          </Text>
+        </View>
+        <Switch
+          value={!!user.ai_consent_at}
+          onValueChange={handleToggleConsent}
+          trackColor={{ false: colors.lineStrong, true: colors.accent }}
+          thumbColor={colors.text}
+        />
+      </View>
+
+      <View style={styles.divider} />
+
+      <TouchableOpacity style={styles.footerAction} onPress={confirmSignOut}>
+        <Text style={styles.signOut}>Sign out</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity style={styles.footerAction} onPress={confirmDeleteAccount}>
+        <Text style={styles.delete}>Delete my account</Text>
       </TouchableOpacity>
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#fff' },
-  content: { padding: 20, paddingTop: 60, paddingBottom: 40 },
-  heading: { fontSize: 28, fontWeight: '800', marginBottom: 24 },
-  section: { marginBottom: 24, borderBottomWidth: 1, borderBottomColor: '#eee', paddingBottom: 16 },
-  sectionLabel: { fontSize: 12, color: '#888', textTransform: 'uppercase', marginBottom: 4 },
-  value: { fontSize: 17, fontWeight: '600', color: '#1a1a1a' },
-  muted: { fontSize: 13, color: '#888', marginTop: 4, lineHeight: 18 },
-  button: { marginTop: 12, alignSelf: 'flex-start' },
-  buttonText: { color: '#1a1a1a', fontWeight: '700', textDecorationLine: 'underline' },
-  chipRow: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 8 },
+  screen: { flex: 1, backgroundColor: colors.ink },
+  content: { padding: space.xl, paddingTop: 72, paddingBottom: space.xxxl },
+  eyebrow: { ...type.label, marginBottom: space.sm },
+  display: { ...type.display, marginBottom: space.xxl },
+  sectionLabel: { ...type.label, marginBottom: space.sm },
+  value: { ...type.heading, fontSize: 17, fontWeight: '600' },
+  action: { color: colors.accent, fontSize: 14, fontWeight: '600', marginTop: space.sm },
+  chips: { flexDirection: 'row', flexWrap: 'wrap', marginTop: space.sm },
   chip: {
-    borderWidth: 1, borderColor: '#ddd', borderRadius: 20,
-    paddingVertical: 8, paddingHorizontal: 14, marginRight: 8, marginBottom: 8,
+    borderWidth: 1,
+    borderColor: colors.lineStrong,
+    borderRadius: radius.pill,
+    paddingVertical: space.sm,
+    paddingHorizontal: space.lg,
+    marginRight: space.sm,
+    marginBottom: space.sm,
   },
-  chipActive: { backgroundColor: '#1a1a1a', borderColor: '#1a1a1a' },
-  chipText: { color: '#333' },
-  chipTextActive: { color: '#fff', fontWeight: '600' },
+  chipActive: { backgroundColor: colors.text, borderColor: colors.text },
+  chipText: { color: colors.textMuted, fontSize: 14 },
+  chipTextActive: { color: colors.ink, fontWeight: '700' },
+  divider: { height: 1, backgroundColor: colors.line, marginVertical: space.xl },
   switchRow: { flexDirection: 'row', alignItems: 'flex-start' },
-  switchLabel: { flex: 1, paddingRight: 16 },
-  signOutButton: { marginTop: 8, alignItems: 'center', padding: 14 },
-  signOutText: { color: '#1a1a1a', fontWeight: '600' },
-  deleteButton: { marginTop: 4, alignItems: 'center', padding: 14 },
-  deleteText: { color: '#c44', fontWeight: '600' },
+  switchText: { flex: 1, paddingRight: space.lg },
+  help: { ...type.small, fontSize: 13, lineHeight: 19 },
+  footerAction: { paddingVertical: space.md },
+  signOut: { color: colors.textMuted, fontSize: 15, fontWeight: '600' },
+  delete: { color: colors.negative, fontSize: 15, fontWeight: '600' },
 });

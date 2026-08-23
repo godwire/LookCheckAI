@@ -1,62 +1,72 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+
 import ClothingCard from './ClothingCard';
+import ColorwayStrip from './ColorwayStrip';
+import { colors, space, radius, type } from '../theme';
 
 /**
- * `onFeedback` is optional. When provided, like/dislike buttons appear and the
- * rating is sent to the backend, which lowers the priority of items from
- * rejected outfits next time.
- *
- * Note: this component no longer renders its own ScrollView. It is always
- * placed inside a scrolling parent, and nesting scroll views broke scrolling
- * on Android.
+ * `onFeedback` is optional. When supplied, the rating is sent to the backend,
+ * which demotes pieces from rejected outfits next time.
  */
 export default function OutfitCard({ outfit, onFeedback }) {
   if (!outfit) return null;
-
   const items = outfit.items || [];
 
-  return (
-    <View style={styles.container}>
-      {outfit.reasoning ? <Text style={styles.reasoning}>{outfit.reasoning}</Text> : null}
+  if (items.length === 0) {
+    return <Text style={styles.empty}>No pieces could be matched for this look.</Text>;
+  }
 
-      {items.length === 0 ? (
-        <Text style={styles.empty}>No items could be selected for this look.</Text>
-      ) : (
-        items.map((item) => <ClothingCard key={item.id} item={item} />)
-      )}
+  return (
+    <View>
+      <ColorwayStrip items={items} />
+
+      {outfit.reasoning ? (
+        <View style={styles.note}>
+          <View style={styles.rule} />
+          <Text style={styles.noteText}>{outfit.reasoning}</Text>
+        </View>
+      ) : null}
+
+      <Text style={styles.sectionLabel}>The pieces</Text>
+      {items.map((item) => (
+        <ClothingCard key={item.id} item={item} />
+      ))}
 
       {outfit.styling_tip ? (
-        <View style={styles.tipBox}>
-          <Text style={styles.tipLabel}>💡 Styling tip</Text>
+        <View style={styles.tip}>
+          <Text style={styles.tipLabel}>How to wear it</Text>
           <Text style={styles.tipText}>{outfit.styling_tip}</Text>
         </View>
       ) : null}
 
-      {onFeedback && items.length > 0 ? (
-        <View style={styles.feedbackRow}>
-          <Text style={styles.feedbackLabel}>Does this work for you?</Text>
+      {onFeedback ? (
+        <View style={styles.feedback}>
+          <Text style={styles.feedbackLabel}>Would you wear this?</Text>
           <View style={styles.feedbackButtons}>
             <TouchableOpacity
-              style={[styles.feedbackButton, outfit.feedback === 'like' && styles.likeActive]}
+              style={[styles.vote, outfit.feedback === 'like' && styles.voteYes]}
               onPress={() => onFeedback('like')}
             >
-              <Text style={styles.feedbackIcon}>👍</Text>
+              <Text style={[styles.voteText, outfit.feedback === 'like' && styles.voteTextYes]}>
+                Yes
+              </Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.feedbackButton, outfit.feedback === 'dislike' && styles.dislikeActive]}
+              style={[styles.vote, outfit.feedback === 'dislike' && styles.voteNo]}
               onPress={() => onFeedback('dislike')}
             >
-              <Text style={styles.feedbackIcon}>👎</Text>
+              <Text style={[styles.voteText, outfit.feedback === 'dislike' && styles.voteTextNo]}>
+                Not today
+              </Text>
             </TouchableOpacity>
           </View>
         </View>
       ) : null}
 
       {outfit.generated_by === 'mock' ? (
-        <Text style={styles.demoNote}>
-          Demo mode: outfits are assembled by weather rules. Add an AI key on the server for
-          personalised styling.
+        <Text style={styles.demo}>
+          Matching runs on colour and style rules. Add an AI key on the server for written styling.
         </Text>
       ) : null}
     </View>
@@ -64,24 +74,36 @@ export default function OutfitCard({ outfit, onFeedback }) {
 }
 
 const styles = StyleSheet.create({
-  container: { marginBottom: 8 },
-  reasoning: { fontSize: 15, color: '#333', fontStyle: 'italic', marginBottom: 16, lineHeight: 21 },
-  empty: { color: '#888', fontSize: 14, paddingVertical: 20, textAlign: 'center' },
-  tipBox: { backgroundColor: '#fff8e1', borderRadius: 12, padding: 12, marginTop: 8 },
-  tipLabel: { fontWeight: '700', marginBottom: 4, color: '#8a6d00' },
-  tipText: { color: '#5a5a5a', fontSize: 13 },
-  feedbackRow: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    marginTop: 20, paddingTop: 16, borderTopWidth: 1, borderTopColor: '#eee',
+  empty: { ...type.bodyMuted, paddingVertical: space.xl, textAlign: 'center' },
+  note: { flexDirection: 'row', marginBottom: space.xl },
+  rule: { width: 2, backgroundColor: colors.accent, borderRadius: 1, marginRight: space.md },
+  noteText: { ...type.body, flex: 1, fontSize: 16, lineHeight: 24 },
+  sectionLabel: { ...type.label, marginBottom: space.md },
+  tip: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    borderLeftWidth: 2,
+    borderLeftColor: colors.accent,
+    padding: space.lg,
+    marginTop: space.md,
   },
-  feedbackLabel: { color: '#666', fontSize: 14 },
+  tipLabel: { ...type.label, color: colors.accent, marginBottom: space.xs },
+  tipText: { ...type.body, fontSize: 14, lineHeight: 21 },
+  feedback: { marginTop: space.xl, paddingTop: space.lg, borderTopWidth: 1, borderTopColor: colors.line },
+  feedbackLabel: { ...type.label, marginBottom: space.md },
   feedbackButtons: { flexDirection: 'row' },
-  feedbackButton: {
-    borderWidth: 1, borderColor: '#ddd', borderRadius: 20,
-    paddingVertical: 8, paddingHorizontal: 16, marginLeft: 8,
+  vote: {
+    borderWidth: 1,
+    borderColor: colors.lineStrong,
+    borderRadius: radius.pill,
+    paddingVertical: space.sm + 2,
+    paddingHorizontal: space.lg,
+    marginRight: space.sm,
   },
-  likeActive: { backgroundColor: '#e8f5e9', borderColor: '#66bb6a' },
-  dislikeActive: { backgroundColor: '#fdecea', borderColor: '#ef9a9a' },
-  feedbackIcon: { fontSize: 18 },
-  demoNote: { fontSize: 12, color: '#aaa', marginTop: 16, lineHeight: 17 },
+  voteYes: { backgroundColor: colors.positive, borderColor: colors.positive },
+  voteNo: { backgroundColor: colors.negative, borderColor: colors.negative },
+  voteText: { color: colors.textMuted, fontSize: 14, fontWeight: '600' },
+  voteTextYes: { color: colors.accentInk },
+  voteTextNo: { color: colors.accentInk },
+  demo: { fontSize: 12, color: colors.textFaint, marginTop: space.xl, lineHeight: 18 },
 });

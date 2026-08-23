@@ -8,16 +8,31 @@ import * as ImagePicker from 'expo-image-picker';
 import { useAuth } from '../context/AuthContext';
 import { api, ApiError } from '../api/client';
 import { CLOTHING_CATEGORIES } from '../config';
+import { colors, space, radius, type, swatchColor, CATEGORY_LABELS } from '../theme';
+
+const WARMTH_NOTES = {
+  1: 'Height of summer',
+  2: 'Warm days',
+  3: 'Mild, in between',
+  4: 'Cold weather',
+  5: 'Deep winter',
+};
+
+const METHODS = [
+  { key: 'camera', title: 'Photograph it', note: 'Best results. The app reads the garment itself.' },
+  { key: 'gallery', title: 'Pick from photos', note: 'Use a shot you already have.' },
+  { key: 'link', title: 'Paste a shop link', note: 'Pulls the details and the product photo.' },
+  { key: 'manual', title: 'Type it in', note: 'No AI involved.' },
+];
 
 export default function AddItemScreen({ navigation }) {
-  const { user, setAiConsent } = useAuth();
-  const [mode, setMode] = useState(null); // 'photo' | 'link' | 'manual' | null
+  const { setAiConsent } = useAuth();
+  const [mode, setMode] = useState(null);
   const [photoUri, setPhotoUri] = useState(null);
   const [linkUrl, setLinkUrl] = useState('');
   const [analyzing, setAnalyzing] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  // Editable fields, pre-filled by AI after photo/link analysis, or typed manually.
   const [category, setCategory] = useState('top');
   const [color, setColor] = useState('');
   const [style, setStyle] = useState('');
@@ -27,19 +42,21 @@ export default function AddItemScreen({ navigation }) {
   const [imageUrl, setImageUrl] = useState(null);
   const [analyzed, setAnalyzed] = useState(false);
 
+  async function handleMethod(key) {
+    if (key === 'camera') return handleTakePhoto();
+    if (key === 'gallery') return handlePickPhoto();
+    setMode(key);
+  }
+
   async function handlePickPhoto() {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
-      Alert.alert('Permission needed', 'Please allow photo library access to add wardrobe items.');
+      Alert.alert('Photos are off', 'Allow photo access to add pieces from your library.');
       return;
     }
     // `MediaTypeOptions` was removed in Expo SDK 54 - the array form replaces it.
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
-      quality: 0.7,
-    });
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.7 });
     if (result.canceled) return;
-
     const uri = result.assets[0].uri;
     setPhotoUri(uri);
     setMode('photo');
@@ -49,12 +66,11 @@ export default function AddItemScreen({ navigation }) {
   async function handleTakePhoto() {
     const permission = await ImagePicker.requestCameraPermissionsAsync();
     if (!permission.granted) {
-      Alert.alert('Permission needed', 'Please allow camera access to add wardrobe items.');
+      Alert.alert('Camera is off', 'Allow camera access to photograph a piece.');
       return;
     }
     const result = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.7 });
     if (result.canceled) return;
-
     const uri = result.assets[0].uri;
     setPhotoUri(uri);
     setMode('photo');
@@ -64,8 +80,8 @@ export default function AddItemScreen({ navigation }) {
   /** The backend refuses AI analysis until the user has opted in. */
   function offerConsent(retry) {
     Alert.alert(
-      'Allow AI analysis?',
-      'To recognise your clothes automatically, the image or product page is sent to an external AI provider. Nothing is sent until you agree.',
+      'Send this to the AI?',
+      'To recognise the garment, the image or shop page goes to an external AI provider. Nothing is sent until you agree.',
       [
         { text: 'Not now', style: 'cancel' },
         {
@@ -75,7 +91,7 @@ export default function AddItemScreen({ navigation }) {
               await setAiConsent(true);
               await retry();
             } catch (err) {
-              Alert.alert('Could not save your choice', err.message);
+              Alert.alert('Choice not saved', err.message);
             }
           },
         },
@@ -84,14 +100,8 @@ export default function AddItemScreen({ navigation }) {
   }
 
   function handleAnalysisError(err, retry) {
-    if (err instanceof ApiError && err.status === 403) {
-      offerConsent(retry);
-      return;
-    }
-    Alert.alert(
-      'AI analysis unavailable',
-      `${err.message}\n\nYou can still fill in the details manually below.`
-    );
+    if (err instanceof ApiError && err.status === 403) return offerConsent(retry);
+    Alert.alert('Could not read this piece', `${err.message}\n\nFill in the details below instead.`);
   }
 
   async function analyzePhoto(uri) {
@@ -108,7 +118,7 @@ export default function AddItemScreen({ navigation }) {
   async function handleAnalyzeLink() {
     const url = linkUrl.trim();
     if (!url) {
-      Alert.alert('Enter a link', 'Paste a product page URL first.');
+      Alert.alert('Add a link', 'Paste the address of a product page first.');
       return;
     }
     setAnalyzing(true);
@@ -128,7 +138,6 @@ export default function AddItemScreen({ navigation }) {
     if (attrs.warmth_level) setWarmthLevel(attrs.warmth_level);
     if (attrs.description) setDescription(attrs.description);
     if (attrs.source_link) setSourceLink(attrs.source_link);
-    // Links often expose a product photo; show it and keep it with the item.
     if (attrs.image_url) {
       setImageUrl(attrs.image_url);
       if (!photoUri) setPhotoUri(attrs.image_url);
@@ -138,7 +147,7 @@ export default function AddItemScreen({ navigation }) {
 
   async function handleSave() {
     if (!color.trim() || !style.trim()) {
-      Alert.alert('Missing details', 'Please fill in at least color and style.');
+      Alert.alert('Two fields missing', 'Colour and style are needed to match this piece.');
       return;
     }
     setSaving(true);
@@ -154,132 +163,138 @@ export default function AddItemScreen({ navigation }) {
       });
       navigation.goBack();
     } catch (err) {
-      Alert.alert('Could not save item', err.message);
+      Alert.alert('Not saved', err.message);
     } finally {
       setSaving(false);
     }
   }
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <View style={styles.headerRow}>
-        <TouchableOpacity onPress={() => navigation.goBack()}>
-          <Text style={styles.back}>‹ Back</Text>
-        </TouchableOpacity>
-      </View>
+    <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+      <TouchableOpacity onPress={() => navigation.goBack()} hitSlop={12}>
+        <Text style={styles.back}>← Wardrobe</Text>
+      </TouchableOpacity>
 
-      <Text style={styles.heading}>Add to Wardrobe</Text>
+      <Text style={styles.display}>Add a piece</Text>
 
       {!mode && (
-        <View style={styles.modeButtons}>
-          <TouchableOpacity style={styles.modeButton} onPress={handleTakePhoto}>
-            <Text style={styles.modeButtonIcon}>📷</Text>
-            <Text style={styles.modeButtonText}>Take a photo</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.modeButton} onPress={handlePickPhoto}>
-            <Text style={styles.modeButtonIcon}>🖼️</Text>
-            <Text style={styles.modeButtonText}>Choose from gallery</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.modeButton} onPress={() => setMode('link')}>
-            <Text style={styles.modeButtonIcon}>🔗</Text>
-            <Text style={styles.modeButtonText}>Paste a product link</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.modeButton} onPress={() => setMode('manual')}>
-            <Text style={styles.modeButtonIcon}>✏️</Text>
-            <Text style={styles.modeButtonText}>Enter details manually</Text>
-          </TouchableOpacity>
+        <View style={styles.methods}>
+          {METHODS.map((method) => (
+            <TouchableOpacity
+              key={method.key}
+              style={styles.method}
+              onPress={() => handleMethod(method.key)}
+            >
+              <View style={styles.methodText}>
+                <Text style={styles.methodTitle}>{method.title}</Text>
+                <Text style={styles.methodNote}>{method.note}</Text>
+              </View>
+              <Text style={styles.chevron}>→</Text>
+            </TouchableOpacity>
+          ))}
         </View>
       )}
 
       {mode === 'link' && !analyzed && (
-        <View>
+        <View style={styles.linkBlock}>
+          <Text style={styles.label}>Product page</Text>
           <TextInput
             style={styles.input}
-            placeholder="https://store.com/product/..."
+            placeholder="https://"
+            placeholderTextColor={colors.textFaint}
             value={linkUrl}
             onChangeText={setLinkUrl}
             autoCapitalize="none"
             autoCorrect={false}
             keyboardType="url"
           />
-          <TouchableOpacity style={styles.primaryButton} onPress={handleAnalyzeLink}>
-            <Text style={styles.primaryButtonText}>Analyze link</Text>
+          <TouchableOpacity style={styles.primary} onPress={handleAnalyzeLink}>
+            <Text style={styles.primaryText}>Read this page</Text>
           </TouchableOpacity>
         </View>
       )}
 
-      {photoUri && <Image source={{ uri: photoUri }} style={styles.preview} />}
+      {photoUri && <Image source={{ uri: photoUri }} style={styles.preview} resizeMode="cover" />}
 
       {analyzing && (
         <View style={styles.centered}>
-          <ActivityIndicator size="large" color="#1a1a1a" />
-          <Text style={styles.analyzingText}>AI is looking at this item...</Text>
+          <ActivityIndicator color={colors.accent} />
+          <Text style={styles.analyzing}>Reading the garment</Text>
         </View>
       )}
 
       {mode && !analyzing && (
         <View style={styles.form}>
           <Text style={styles.label}>Category</Text>
-          <View style={styles.chipRow}>
-            {CLOTHING_CATEGORIES.map((c) => (
+          <View style={styles.chips}>
+            {CLOTHING_CATEGORIES.map((value) => (
               <TouchableOpacity
-                key={c}
-                style={[styles.chip, category === c && styles.chipActive]}
-                onPress={() => setCategory(c)}
+                key={value}
+                style={[styles.chip, category === value && styles.chipActive]}
+                onPress={() => setCategory(value)}
               >
-                <Text style={[styles.chipText, category === c && styles.chipTextActive]}>{c}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-
-          <Text style={styles.label}>Color</Text>
-          <TextInput
-            style={styles.input}
-            value={color}
-            onChangeText={setColor}
-            placeholder="e.g. Navy blue"
-          />
-
-          <Text style={styles.label}>Style</Text>
-          <TextInput
-            style={styles.input}
-            value={style}
-            onChangeText={setStyle}
-            placeholder="e.g. Minimalist"
-          />
-
-          <Text style={styles.label}>Warmth level: {warmthLevel}/5</Text>
-          <View style={styles.chipRow}>
-            {[1, 2, 3, 4, 5].map((level) => (
-              <TouchableOpacity
-                key={level}
-                style={[styles.warmthChip, warmthLevel === level && styles.chipActive]}
-                onPress={() => setWarmthLevel(level)}
-              >
-                <Text style={[styles.chipText, warmthLevel === level && styles.chipTextActive]}>
-                  {level}
+                <Text style={[styles.chipText, category === value && styles.chipTextActive]}>
+                  {CATEGORY_LABELS[value]}
                 </Text>
               </TouchableOpacity>
             ))}
           </View>
 
-          <Text style={styles.label}>Notes (optional)</Text>
+          <Text style={[styles.label, styles.spaced]}>Colour</Text>
+          <View style={styles.colorRow}>
+            <View style={[styles.swatch, { backgroundColor: swatchColor(color) }]} />
+            <TextInput
+              style={[styles.input, styles.colorInput]}
+              value={color}
+              onChangeText={setColor}
+              placeholder="Charcoal grey"
+              placeholderTextColor={colors.textFaint}
+            />
+          </View>
+
+          <Text style={[styles.label, styles.spaced]}>Style</Text>
+          <TextInput
+            style={styles.input}
+            value={style}
+            onChangeText={setStyle}
+            placeholder="Minimalist"
+            placeholderTextColor={colors.textFaint}
+          />
+
+          <Text style={[styles.label, styles.spaced]}>Warmth</Text>
+          <View style={styles.warmthRow}>
+            {[1, 2, 3, 4, 5].map((level) => (
+              <TouchableOpacity
+                key={level}
+                style={[styles.warmth, warmthLevel === level && styles.warmthActive]}
+                onPress={() => setWarmthLevel(level)}
+              >
+                <Text style={[styles.warmthText, warmthLevel === level && styles.warmthTextActive]}>
+                  {level}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          <Text style={styles.warmthNote}>{WARMTH_NOTES[warmthLevel]}</Text>
+
+          <Text style={[styles.label, styles.spaced]}>Notes</Text>
           <TextInput
             style={[styles.input, styles.textArea]}
             value={description}
             onChangeText={setDescription}
-            placeholder="Any extra detail..."
+            placeholder="Anything worth remembering about this piece"
+            placeholderTextColor={colors.textFaint}
             multiline
           />
 
           <TouchableOpacity
-            style={[styles.primaryButton, saving && styles.disabledButton]}
+            style={[styles.primary, styles.save, saving && styles.disabled]}
             onPress={handleSave}
             disabled={saving}
           >
-            <Text style={styles.primaryButtonText}>
-              {saving ? 'Saving...' : 'Save to wardrobe'}
-            </Text>
+            {saving
+              ? <ActivityIndicator color={colors.accentInk} />
+              : <Text style={styles.primaryText}>Add to wardrobe</Text>}
           </TouchableOpacity>
         </View>
       )}
@@ -288,43 +303,94 @@ export default function AddItemScreen({ navigation }) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#fff' },
-  content: { padding: 20, paddingTop: 60, paddingBottom: 40 },
-  headerRow: { marginBottom: 8 },
-  back: { fontSize: 16, color: '#1a1a1a', fontWeight: '600' },
-  heading: { fontSize: 26, fontWeight: '800', marginBottom: 24 },
-  modeButtons: {},
-  modeButton: {
-    flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: '#ddd',
-    borderRadius: 12, padding: 16, marginBottom: 12,
+  screen: { flex: 1, backgroundColor: colors.ink },
+  content: { padding: space.xl, paddingTop: 72, paddingBottom: space.xxxl },
+  back: { color: colors.textMuted, fontSize: 15, marginBottom: space.lg },
+  display: { ...type.display, marginBottom: space.xl },
+  methods: { borderTopWidth: 1, borderTopColor: colors.line },
+  method: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: space.lg,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.line,
   },
-  modeButtonIcon: { fontSize: 24, marginRight: 12 },
-  modeButtonText: { fontSize: 16, fontWeight: '600' },
+  methodText: { flex: 1, paddingRight: space.md },
+  methodTitle: { ...type.heading, fontSize: 17 },
+  methodNote: { ...type.small, fontSize: 13, marginTop: 3 },
+  chevron: { color: colors.textFaint, fontSize: 18 },
+  linkBlock: { marginTop: space.md },
+  label: { ...type.label },
+  spaced: { marginTop: space.xl },
   input: {
-    borderWidth: 1, borderColor: '#ddd', borderRadius: 10,
-    padding: 14, fontSize: 15, marginBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.lineStrong,
+    paddingVertical: space.md,
+    fontSize: 16,
+    color: colors.text,
+    marginTop: space.xs,
   },
-  textArea: { minHeight: 70, textAlignVertical: 'top' },
-  primaryButton: { backgroundColor: '#1a1a1a', borderRadius: 10, padding: 16, alignItems: 'center' },
-  primaryButtonText: { color: '#fff', fontWeight: '700', fontSize: 15 },
-  disabledButton: { opacity: 0.6 },
-  preview: { width: '100%', height: 220, borderRadius: 12, marginVertical: 16 },
-  centered: { alignItems: 'center', paddingVertical: 30 },
-  analyzingText: { marginTop: 10, color: '#888' },
-  form: { marginTop: 8 },
-  label: {
-    fontSize: 13, fontWeight: '600', color: '#333', marginBottom: 8, textTransform: 'uppercase',
+  textArea: { minHeight: 64, textAlignVertical: 'top' },
+  colorRow: { flexDirection: 'row', alignItems: 'center' },
+  swatch: {
+    width: 34,
+    height: 34,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.line,
+    marginRight: space.md,
+    marginTop: space.sm,
   },
-  chipRow: { flexDirection: 'row', flexWrap: 'wrap', marginBottom: 16 },
+  colorInput: { flex: 1 },
+  preview: {
+    width: '100%',
+    height: 260,
+    borderRadius: radius.md,
+    marginVertical: space.xl,
+    backgroundColor: colors.surface,
+  },
+  centered: { alignItems: 'center', paddingVertical: space.xl },
+  analyzing: { ...type.small, marginTop: space.md },
+  form: { marginTop: space.md },
+  chips: { flexDirection: 'row', flexWrap: 'wrap', marginTop: space.md },
   chip: {
-    borderWidth: 1, borderColor: '#ddd', borderRadius: 20,
-    paddingVertical: 8, paddingHorizontal: 14, marginRight: 8, marginBottom: 8,
+    borderWidth: 1,
+    borderColor: colors.lineStrong,
+    borderRadius: radius.pill,
+    paddingVertical: space.sm,
+    paddingHorizontal: space.md,
+    marginRight: space.sm,
+    marginBottom: space.sm,
   },
-  warmthChip: {
-    borderWidth: 1, borderColor: '#ddd', borderRadius: 20,
-    width: 40, height: 40, alignItems: 'center', justifyContent: 'center', marginRight: 8,
+  chipActive: { backgroundColor: colors.text, borderColor: colors.text },
+  chipText: { color: colors.textMuted, fontSize: 13 },
+  chipTextActive: { color: colors.ink, fontWeight: '700' },
+  warmthRow: { flexDirection: 'row', marginTop: space.md },
+  warmth: {
+    width: 46,
+    height: 46,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.lineStrong,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: space.sm,
   },
-  chipActive: { backgroundColor: '#1a1a1a', borderColor: '#1a1a1a' },
-  chipText: { color: '#333', textTransform: 'capitalize' },
-  chipTextActive: { color: '#fff', fontWeight: '700' },
+  warmthActive: { backgroundColor: colors.text, borderColor: colors.text },
+  warmthText: { color: colors.textMuted, fontSize: 15 },
+  warmthTextActive: { color: colors.ink, fontWeight: '700' },
+  warmthNote: { ...type.small, fontSize: 12, marginTop: space.sm },
+  primary: {
+    backgroundColor: colors.accent,
+    borderRadius: radius.pill,
+    paddingVertical: space.lg,
+    alignItems: 'center',
+    marginTop: space.lg,
+    minHeight: 54,
+    justifyContent: 'center',
+  },
+  save: { marginTop: space.xxl },
+  disabled: { opacity: 0.6 },
+  primaryText: { color: colors.accentInk, fontWeight: '700', fontSize: 15 },
 });

@@ -9,6 +9,9 @@ import { useAuth } from '../context/AuthContext';
 import { api } from '../api/client';
 import WeatherBadge from '../components/WeatherBadge';
 import OutfitCard from '../components/OutfitCard';
+import { colors, space, radius, type } from '../theme';
+
+const DATE_FORMAT = { weekday: 'long', day: 'numeric', month: 'long' };
 
 export default function TodayLookScreen({ navigation }) {
   const { user } = useAuth();
@@ -20,9 +23,8 @@ export default function TodayLookScreen({ navigation }) {
 
   /**
    * GET returns the look already generated today, so this is cheap and stable.
-   * The previous version called the generate endpoint on every screen focus,
-   * which produced a different outfit each time you switched tabs and burned
-   * an AI call doing it.
+   * An earlier version called the generate endpoint on every screen focus,
+   * which changed the outfit each time you switched tabs.
    */
   const loadOutfit = useCallback(async () => {
     setError(null);
@@ -36,12 +38,8 @@ export default function TodayLookScreen({ navigation }) {
     }
   }, []);
 
-  useEffect(() => {
-    loadOutfit();
-  }, [loadOutfit]);
+  useEffect(() => { loadOutfit(); }, [loadOutfit]);
 
-  // Refresh when returning to the tab, but only after the first load, and
-  // only to pick up wardrobe changes - never to generate a new outfit.
   useFocusEffect(
     useCallback(() => {
       if (loadedOnce.current) loadOutfit();
@@ -50,11 +48,10 @@ export default function TodayLookScreen({ navigation }) {
 
   async function handleRegenerate() {
     setRegenerating(true);
-    setError(null);
     try {
       setOutfit(await api.regenerateOutfitToday());
     } catch (err) {
-      Alert.alert('Could not suggest another look', err.message);
+      Alert.alert('No other look available', err.message);
     } finally {
       setRegenerating(false);
     }
@@ -68,41 +65,45 @@ export default function TodayLookScreen({ navigation }) {
       await api.sendOutfitFeedback(outfit.outfit_id, rating);
     } catch (err) {
       setOutfit((current) => ({ ...current, feedback: previous }));
-      Alert.alert('Could not save your feedback', err.message);
+      Alert.alert('Rating not saved', err.message);
     }
   }
 
   const emptyWardrobe = error && error.toLowerCase().includes('wardrobe is empty');
+  const today = new Date().toLocaleDateString('en-GB', DATE_FORMAT);
 
   return (
     <ScrollView
-      style={styles.container}
+      style={styles.screen}
       contentContainerStyle={styles.content}
-      refreshControl={<RefreshControl refreshing={loading && !!outfit} onRefresh={loadOutfit} />}
+      refreshControl={
+        <RefreshControl
+          refreshing={loading && !!outfit}
+          onRefresh={loadOutfit}
+          tintColor={colors.textMuted}
+        />
+      }
     >
-      <Text style={styles.greeting}>Hi {user?.name} 👋</Text>
-      <Text style={styles.heading}>Today's Look</Text>
+      <Text style={styles.eyebrow}>{today}</Text>
+      <Text style={styles.display}>Today{'\u2019'}s look</Text>
 
-      {outfit?.weather && <WeatherBadge weather={outfit.weather} />}
+      {outfit?.weather && <WeatherBadge weather={outfit.weather} city={user?.city} />}
 
       {loading && !outfit && (
         <View style={styles.centered}>
-          <ActivityIndicator size="large" color="#1a1a1a" />
-          <Text style={styles.loadingText}>Styling your outfit...</Text>
+          <ActivityIndicator color={colors.accent} />
+          <Text style={styles.loadingText}>Matching your wardrobe</Text>
         </View>
       )}
 
       {emptyWardrobe && (
-        <View style={styles.emptyBox}>
-          <Text style={styles.emptyTitle}>Your wardrobe is empty</Text>
-          <Text style={styles.emptyText}>
-            Add a few items and we'll put together a look for today.
+        <View style={styles.empty}>
+          <Text style={styles.emptyTitle}>Nothing to work with yet</Text>
+          <Text style={styles.emptyBody}>
+            Add a few pieces and the app will start putting looks together.
           </Text>
-          <TouchableOpacity
-            style={styles.primaryButton}
-            onPress={() => navigation.navigate('Wardrobe')}
-          >
-            <Text style={styles.primaryButtonText}>Add clothes</Text>
+          <TouchableOpacity style={styles.primary} onPress={() => navigation.navigate('Wardrobe')}>
+            <Text style={styles.primaryText}>Add your first piece</Text>
           </TouchableOpacity>
         </View>
       )}
@@ -110,7 +111,7 @@ export default function TodayLookScreen({ navigation }) {
       {error && !emptyWardrobe && (
         <View style={styles.errorBox}>
           <Text style={styles.errorText}>{error}</Text>
-          <TouchableOpacity onPress={loadOutfit} style={styles.retryButton}>
+          <TouchableOpacity onPress={loadOutfit} style={styles.retry}>
             <Text style={styles.retryText}>Try again</Text>
           </TouchableOpacity>
         </View>
@@ -120,15 +121,13 @@ export default function TodayLookScreen({ navigation }) {
 
       {outfit && !error && (
         <TouchableOpacity
-          style={styles.refreshButton}
+          style={styles.secondary}
           onPress={handleRegenerate}
           disabled={regenerating}
         >
-          {regenerating ? (
-            <ActivityIndicator color="#555" />
-          ) : (
-            <Text style={styles.refreshButtonText}>🔄 Suggest something else</Text>
-          )}
+          {regenerating
+            ? <ActivityIndicator color={colors.textMuted} />
+            : <Text style={styles.secondaryText}>Show me another look</Text>}
         </TouchableOpacity>
       )}
     </ScrollView>
@@ -136,24 +135,41 @@ export default function TodayLookScreen({ navigation }) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#fff' },
-  content: { padding: 20, paddingTop: 60, paddingBottom: 40 },
-  greeting: { fontSize: 15, color: '#888' },
-  heading: { fontSize: 28, fontWeight: '800', marginBottom: 16 },
-  centered: { alignItems: 'center', paddingVertical: 40 },
-  loadingText: { marginTop: 12, color: '#888' },
-  errorBox: { backgroundColor: '#fee', borderRadius: 12, padding: 16, marginTop: 8 },
-  errorText: { color: '#a33' },
-  retryButton: { marginTop: 10 },
-  retryText: { color: '#1a1a1a', fontWeight: '700' },
-  emptyBox: { alignItems: 'center', paddingVertical: 40 },
-  emptyTitle: { fontSize: 17, fontWeight: '700', color: '#333' },
-  emptyText: { fontSize: 14, color: '#888', marginTop: 8, textAlign: 'center', paddingHorizontal: 20 },
-  primaryButton: {
-    backgroundColor: '#1a1a1a', borderRadius: 10,
-    paddingVertical: 14, paddingHorizontal: 28, marginTop: 20,
+  screen: { flex: 1, backgroundColor: colors.ink },
+  content: { padding: space.xl, paddingTop: 72, paddingBottom: space.xxxl },
+  eyebrow: { ...type.label, marginBottom: space.sm },
+  display: { ...type.display, marginBottom: space.xl },
+  centered: { alignItems: 'center', paddingVertical: space.xxxl },
+  loadingText: { ...type.small, marginTop: space.md },
+  empty: { paddingVertical: space.xxl },
+  emptyTitle: { ...type.heading, marginBottom: space.sm },
+  emptyBody: { ...type.bodyMuted, marginBottom: space.xl },
+  primary: {
+    backgroundColor: colors.accent,
+    borderRadius: radius.pill,
+    paddingVertical: space.lg,
+    alignItems: 'center',
   },
-  primaryButtonText: { color: '#fff', fontWeight: '700' },
-  refreshButton: { alignItems: 'center', paddingVertical: 16, marginTop: 8, minHeight: 52 },
-  refreshButtonText: { color: '#555', fontSize: 14 },
+  primaryText: { color: colors.accentInk, fontWeight: '700', fontSize: 15 },
+  errorBox: {
+    backgroundColor: colors.surface,
+    borderLeftWidth: 2,
+    borderLeftColor: colors.negative,
+    borderRadius: radius.md,
+    padding: space.lg,
+  },
+  errorText: { ...type.body, fontSize: 14 },
+  retry: { marginTop: space.md },
+  retryText: { color: colors.accent, fontWeight: '700', fontSize: 14 },
+  secondary: {
+    borderWidth: 1,
+    borderColor: colors.lineStrong,
+    borderRadius: radius.pill,
+    paddingVertical: space.lg,
+    alignItems: 'center',
+    marginTop: space.xxl,
+    minHeight: 52,
+    justifyContent: 'center',
+  },
+  secondaryText: { color: colors.textMuted, fontSize: 14, fontWeight: '600' },
 });

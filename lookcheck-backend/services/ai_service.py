@@ -28,6 +28,7 @@ import requests
 
 import config
 import security
+from services import compatibility
 
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
@@ -128,7 +129,16 @@ def _complete_gemini(prompt, image_bytes, media_type, max_tokens):
     url = f"{GEMINI_API_URL}/{config.GEMINI_MODEL}:generateContent"
     payload = {
         "contents": [{"parts": parts}],
-        "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.7},
+        "generationConfig": {
+            "maxOutputTokens": max_tokens,
+            "temperature": 0.7,
+            # Gemini 2.5+ reasons before answering by default, and that
+            # reasoning is billed against maxOutputTokens. On a small budget
+            # the whole allowance is spent thinking and the reply comes back
+            # with no text at all. We want structured extraction, not
+            # deliberation, so the budget is set to zero.
+            "thinkingConfig": {"thinkingBudget": 0},
+        },
     }
     headers = {
         "x-goog-api-key": config.GEMINI_API_KEY,
@@ -148,12 +158,7 @@ def _complete_gemini(prompt, image_bytes, media_type, max_tokens):
             continue
 
         if response.status_code == 200:
-            data = response.json()
-            try:
-                parts = data["candidates"][0]["content"]["parts"]
-            except (KeyError, IndexError):
-                raise AIServiceError("Gemini returned no usable content.")
-            return "\n".join(part.get("text", "") for part in parts)
+            return _read_gemini_text(response.json())
 
         detail = ""
         try:
@@ -179,6 +184,36 @@ def _complete_gemini(prompt, image_bytes, media_type, max_tokens):
     raise last_error or AIServiceError("The AI service is unavailable right now.")
 
 
+def _read_gemini_text(data):
+    """Pulls the text out of a Gemini reply, and explains itself when there
+    isn't any - an empty candidate is otherwise indistinguishable from a
+    malformed one."""
+    candidates = data.get("candidates") or []
+    if not candidates:
+        blocked = (data.get("promptFeedback") or {}).get("blockReason")
+        if blocked:
+            raise AIServiceError(f"The AI declined to process this input ({blocked}).")
+        raise AIServiceError("The AI returned an empty response.")
+
+    candidate = candidates[0]
+    finish_reason = candidate.get("finishReason")
+    parts = (candidate.get("content") or {}).get("parts") or []
+    text = "\n".join(part.get("text", "") for part in parts if part.get("text")).strip()
+
+    if text:
+        return text
+
+    if finish_reason == "MAX_TOKENS":
+        raise AIServiceError(
+            "The AI ran out of room before answering. Try a different GEMINI_MODEL "
+            "(see list_gemini_models.py)."
+        )
+    if finish_reason in ("SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST"):
+        raise AIServiceError("The AI declined to process this image or page.")
+
+    raise AIServiceError(f"The AI returned no text (finish reason: {finish_reason or 'unknown'}).")
+
+
 def _extract_json(text):
     """Models are asked for raw JSON but sometimes wrap it. Be forgiving."""
     cleaned = (text or "").strip()
@@ -197,7 +232,8 @@ def _extract_json(text):
             return json.loads(match.group(0))
         except json.JSONDecodeError:
             pass
-    raise AIServiceError("The AI response could not be read.")
+    snippet = cleaned[:120].replace("\n", " ")
+    raise AIServiceError(f"The AI response could not be read. It returned: {snippet or '(nothing)'}")
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +288,7 @@ def analyze_clothing_photo(image_bytes, media_type="image/jpeg"):
         "This is a photo of a single clothing item from someone's wardrobe. "
         "Identify it and describe it.\n\n" + CLOTHING_ATTRIBUTES_SCHEMA
     )
-    raw = _complete(prompt, image_bytes=image_bytes, media_type=media_type, max_tokens=300)
+    raw = _complete(prompt, image_bytes=image_bytes, media_type=media_type, max_tokens=800)
     return _normalize_attributes(_extract_json(raw))
 
 
@@ -511,7 +547,7 @@ def parse_product_link(url):
         prompt,
         image_bytes=image_bytes,
         media_type=media_type or "image/jpeg",
-        max_tokens=300,
+        max_tokens=800,
     )
     return _normalize_attributes(_extract_json(raw), source_link=url, image_url=image_url)
 
@@ -615,7 +651,9 @@ def generate_outfit(wardrobe_items, weather, style_preference, event=None,
         "generated_by": "mock" | "gemini" | "anthropic",
     }
 
-    Never raises on model failure: it degrades to the rule-based outfit.
+    The deterministic engine builds and ranks real outfits first; the model
+    only chooses between good options and explains the choice. Never raises on
+    model failure - it falls back to the top-scoring outfit.
     """
     recently_used_ids = set(recently_used_ids or [])
     penalties = dict(disliked_counts or {})
@@ -626,9 +664,28 @@ def generate_outfit(wardrobe_items, weather, style_preference, event=None,
     if not candidates:
         candidates = list(wardrobe_items)
 
+    warmth_range = warmth_range_for(weather)
+    shortlist = compatibility.build_outfits(
+        candidates,
+        warmth_range=warmth_range,
+        preference=style_preference,
+        penalties=penalties,
+        want_outerwear=needs_outerwear(weather),
+        limit=5,
+    )
+
+    if not shortlist:
+        return {
+            "item_ids": assemble_outfit(candidates, weather),
+            "reasoning": _fallback_reasoning(weather, is_live()),
+            "styling_tip": None,
+            "generated_by": "mock",
+        }
+
+    best = shortlist[0]
     fallback = {
-        "item_ids": assemble_outfit(candidates, weather),
-        "reasoning": _fallback_reasoning(weather, is_live()),
+        "item_ids": [item["id"] for item in best["items"]],
+        "reasoning": f"{compatibility.describe(best)} {_fallback_reasoning(weather, is_live())}",
         "styling_tip": None,
         "generated_by": "mock",
     }
@@ -637,49 +694,46 @@ def generate_outfit(wardrobe_items, weather, style_preference, event=None,
         return fallback
 
     valid_ids = {item["id"] for item in candidates}
-    compact = [
-        {
-            "id": item["id"],
-            "category": item["category"],
-            "color": item["color"],
-            "style": item["style"],
-            "warmth": item["warmth_level"],
-            "note": (item.get("description") or "")[:80],
-        }
-        for item in candidates
-    ]
+    options = []
+    for index, entry in enumerate(shortlist, start=1):
+        options.append({
+            "option": index,
+            "item_ids": [item["id"] for item in entry["items"]],
+            "match_score": entry["score"],
+            "reads_as": f"{entry['notes']['style']}, {entry['notes']['color']}",
+            "pieces": [
+                f"{item['color']} {item['category']} ({item['style']}, warmth {item['warmth_level']})"
+                for item in entry["items"]
+            ],
+        })
 
     event_line = (
         f"Occasion: {event['name']} - dress code: {event['dress_code_description']}"
         if event else "Occasion: everyday, no specific event"
     )
-    avoid = sorted(recently_used_ids & valid_ids)
 
-    prompt = f"""You are a personal stylist. Choose one complete outfit from the items below.
+    prompt = f"""You are a personal stylist. Below are outfit options already assembled from \
+this person's wardrobe and pre-scored for colour harmony, style coherence and today's weather.
 
-Available items (already filtered to be weather-appropriate; you may ONLY use these ids):
-{json.dumps(compact, ensure_ascii=False)}
+{json.dumps(options, ensure_ascii=False, indent=1)}
 
 Weather: {weather['temp_c']}C, feels like {weather['feels_like_c']}C, {weather['description']}, \
 rain expected: {weather['rain_probability']}, wind {weather['wind_speed_ms']} m/s.
 Preferred style: {style_preference}
 {event_line}
-Worn recently, prefer alternatives if any exist: {avoid}
 
-Rules:
-- Normally one top, one bottom, footwear, and outerwear if it is cold or wet.
-- Use ONLY ids from the list above.
-- Consider colour coordination, the stated style, and the occasion.
+Pick the option that best fits the occasion and the weather. Usually that is the \
+highest-scoring one, but choose a different option if the occasion calls for it.
 
 Respond with ONLY a JSON object (no prose, no markdown fences):
 {{
-  "item_ids": [<chosen ids>],
-  "reasoning": "<1-2 friendly sentences on why this works today>",
-  "styling_tip": "<one short styling tip>"
+  "item_ids": [<the item_ids of the option you chose, unchanged>],
+  "reasoning": "<1-2 warm, specific sentences on why this works today>",
+  "styling_tip": "<one short, concrete styling tip - how to wear it, not what it is>"
 }}"""
 
     try:
-        parsed = _extract_json(_complete(prompt, max_tokens=500))
+        parsed = _extract_json(_complete(prompt, max_tokens=900))
     except AIServiceError:
         return fallback
 

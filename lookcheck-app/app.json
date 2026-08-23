@@ -4,9 +4,10 @@
     "slug": "lookcheck-ai",
     "version": "1.0.0",
     "orientation": "portrait",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#131110",
     "splash": {
-      "backgroundColor": "#ffffff",
+      "backgroundColor": "#131110",
       "resizeMode": "contain"
     },
     "ios": {
@@ -14,9 +15,9 @@
       "bundleIdentifier": "com.godwire.lookcheckai",
       "buildNumber": "1",
       "infoPlist": {
-        "NSCameraUsageDescription": "LookCheck AI uses your camera to add clothing items to your digital wardrobe.",
-        "NSPhotoLibraryUsageDescription": "LookCheck AI uses your photo library to add clothing items to your digital wardrobe.",
-        "NSLocationWhenInUseUsageDescription": "LookCheck AI uses your location to suggest weather-appropriate outfits."
+        "NSCameraUsageDescription": "LookCheck AI uses your camera to add clothing to your wardrobe.",
+        "NSPhotoLibraryUsageDescription": "LookCheck AI uses your photo library to add clothing to your wardrobe.",
+        "NSLocationWhenInUseUsageDescription": "LookCheck AI uses your location to match outfits to today's weather."
       }
     },
     "android": {
