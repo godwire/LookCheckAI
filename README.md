@@ -4,8 +4,8 @@
 
 The project explores how structured wardrobe information, environmental conditions, user preferences, and large language model reasoning can be combined to generate practical outfit recommendations from clothes that the user actually owns.
 
-> **Project status:** Active development  
-> LookCheckAI is currently a functional prototype. Core application flows are implemented, while recommendation logic, AI-assisted clothing analysis, personalization, testing, and deployment are still being developed.
+> **Project status:** Active development
+> LookCheckAI is a functional prototype with authenticated accounts, a deterministic recommendation engine, and optional AI assistance. Image storage, deployment, and preference learning beyond simple feedback are still being developed.
 
 ---
 
@@ -25,7 +25,7 @@ A useful recommendation system needs to consider several types of information si
 
 LookCheckAI approaches this problem as a **context-aware recommendation task**.
 
-Instead of generating arbitrary outfit ideas, the system works with a structured representation of the user's own wardrobe and attempts to select an appropriate combination from the available items.
+Instead of generating arbitrary outfit ideas, the system works with a structured representation of the user's own wardrobe and selects an appropriate combination from the available items.
 
 ---
 
@@ -44,34 +44,50 @@ Instead of generating arbitrary outfit ideas, the system works with a structured
 
 ---
 
+## Design Principle
+
+The central design decision is that **selection and explanation are separate concerns**.
+
+Deterministic code decides *what to wear*: it filters the wardrobe by weather, enumerates plausible outfits, and scores each one for colour harmony, style coherence, warmth suitability, and repetition. A language model is then given a small shortlist of already-good outfits and asked only to choose between them and describe the result in natural language.
+
+This has three practical consequences:
+
+- **The application works without AI.** With no API key configured, the scoring engine still produces sensible, weather-appropriate, colour-coordinated outfits. The AI improves the output; it is not a prerequisite.
+- **Model output is constrained.** The model can only return item identifiers from a pre-approved shortlist, and every identifier is validated against the user's own wardrobe before it reaches the interface. A hallucinated item is discarded, not displayed.
+- **Recommendations are inspectable.** Scores are produced by readable rules, so a surprising suggestion can be traced to a specific rule rather than to opaque generation.
+
+---
+
 ## Main Features
 
 ### Digital Wardrobe
 
 The application maintains a structured representation of the user's clothing collection.
 
-Wardrobe items can contain information such as:
+Wardrobe items contain:
 
 - clothing category;
 - color;
 - style;
-- approximate warmth level;
-- image reference;
-- additional metadata used during recommendation.
+- approximate warmth level (1–5);
+- optional image reference and source link;
+- free-text notes used during recommendation.
 
-The objective is to transform a collection of clothing images into data that can be used programmatically by the recommendation system.
+The objective is to transform a collection of clothing into data that can be used programmatically by the recommendation system.
 
 ### AI-Assisted Clothing Analysis
 
-LookCheckAI experiments with AI-assisted extraction of clothing attributes from images and other available information.
+Clothing attributes can be extracted automatically from two sources.
 
-Instead of using the image alone during every recommendation request, extracted properties can be stored as structured wardrobe data.
+**From a photograph.** The image is sent to a vision model, which returns structured attributes.
+
+**From a product link.** The backend fetches the page and extracts `schema.org/Product` JSON-LD and OpenGraph metadata rather than scraping visible text. This matters in practice: most modern storefronts render descriptions client-side, so the visible text of a fetched page is often empty, while the structured blocks that power search results and social previews are present in the served HTML. When the page exposes a product image, that image is also sent to the vision model.
 
 ```text
-Clothing Image
+Clothing Image / Product Page
       │
       ▼
-AI Analysis
+Structured extraction  ──►  Validation and normalisation
       │
       ▼
 Structured Attributes
@@ -82,79 +98,72 @@ Structured Attributes
       └── Warmth
 ```
 
-This separation makes it possible to reason over explicit clothing properties while retaining visual information for future extensions.
+Extracted attributes are always normalised before storage: categories and styles are constrained to known values, warmth is clamped to 1–5, and text fields are length-limited. Nothing returned by a model is trusted verbatim.
+
+Analysis requires explicit, revocable consent. Until the user opts in, no image or page content is sent to any third-party provider.
+
+### Outfit Compatibility Engine
+
+Outfit selection is implemented as deterministic scoring in `services/compatibility.py`.
+
+**Colour.** Colours are classified as neutrals or accents by family. The scoring follows the rule most stylists actually apply: build on neutrals, and let at most one colour do the talking. An all-neutral palette or a single accent against neutrals scores highest; a tonal palette scores slightly lower; two competing families lower still; three or more accents are heavily penalised.
+
+**Style.** A pairwise affinity matrix expresses how naturally two styles combine. Formal with Sport scores 0.2; Casual with Streetwear scores 0.85. An outfit's coherence is the mean affinity across its pieces, weighted against the user's stated preference.
+
+**Warmth.** Pieces outside the day's sensible warmth band are penalised proportionally to the distance, which prevents a winter coat being suggested in mild weather simply because it is the only outerwear owned.
+
+**Freshness.** Recently worn pieces, and pieces from outfits the user rejected, lose ground to unused ones.
+
+Candidate outfits are enumerated combinatorially from the weather-filtered wardrobe, scored, de-duplicated, and ranked. The top-ranked outfit is the answer when no model is available; otherwise the top five are passed to the model as options.
 
 ### Context-Aware Outfit Recommendation
-
-Outfits are generated from items that exist in the user's wardrobe.
-
-The recommendation process can take several contextual signals into account:
 
 ```text
 Wardrobe
    │
-   ├──────────────┐
-   │              │
-   ▼              ▼
-Weather        Occasion
-   │              │
-   └──────┬───────┘
-          │
-          ▼
- User Preferences
-          │
-          ▼
-Recommendation Logic
-          │
-          ▼
- Suggested Outfit
+   ▼
+Weather filter (hard constraint)
+   │
+   ▼
+Candidate generation
+   │
+   ▼
+Compatibility scoring  ◄──── Occasion, Preferences, Feedback history
+   │
+   ▼
+Ranked shortlist
+   │
+   ▼
+Model selection and explanation  (optional)
+   │
+   ▼
+Validation against wardrobe
+   │
+   ▼
+Suggested outfit
 ```
-
-The long-term goal is to combine deterministic constraints with AI reasoning rather than relying entirely on unconstrained text generation.
 
 ### Weather-Aware Recommendations
 
-Weather information can be included as contextual input when selecting clothing.
+Weather is contextual input rather than an independent feature. Temperature, apparent temperature, precipitation, and wind determine the acceptable warmth band and whether an outer layer is required.
 
-Relevant factors may include:
+The default provider is **Open-Meteo**, which requires no API key. OpenWeatherMap remains available as an alternative. Results are cached in-process per rounded coordinate pair, so repeated requests do not re-query the provider for a value that barely changes.
 
-- temperature;
-- current weather conditions;
-- perceived warmth requirements;
-- suitability of individual wardrobe items.
-
-Weather is therefore treated as part of the recommendation context rather than as an independent application feature.
+Weather lookup never fails the recommendation: if the provider is unreachable, a neutral fallback context is used.
 
 ### Occasion-Based Recommendations
 
-Users can request outfits for different situations.
+Outfits can be requested for a specific occasion — Casual, Work, Date, Sport, or Party — each carrying a dress-code description that is factored into selection.
 
-Examples include:
+### Recommendation History and Feedback
 
-- Casual
-- Work
-- Date
-- Sport
-- Party
+Each day's look is generated once and cached. Re-opening the application returns the same recommendation rather than silently producing a different one, and an explicit action is required to request an alternative.
 
-The selected context affects which wardrobe items should be considered appropriate for the recommendation.
-
-### Recommendation History
-
-Previous recommendations can be stored and used as additional context.
-
-This creates the basis for future functionality such as:
-
-- reducing repetitive recommendations;
-- tracking frequently used items;
-- identifying neglected wardrobe items;
-- learning user preferences over time.
+Outfits can be rated. Rejected outfits demote their constituent items in future scoring, which forms the first, deliberately simple version of preference learning.
 
 ---
 
 ## System Architecture
-
-LookCheckAI is organized as a mobile client and backend service.
 
 ```text
 LookCheckAI/
@@ -173,68 +182,48 @@ LookCheckAI/
 └── README.md
 ```
 
-The current architecture follows a client-server model:
-
 ```text
 ┌─────────────────────────┐
 │     Mobile Client       │
 │   React Native / Expo   │
 └────────────┬────────────┘
              │
-             │ REST / JSON
+             │ REST / JSON + Bearer token
              │
              ▼
 ┌─────────────────────────┐
 │       Flask API         │
-│        Python           │
+│  Auth · Rate limiting   │
 └────────────┬────────────┘
              │
-     ┌───────┼───────────────┐
-     │       │               │
-     ▼       ▼               ▼
-┌────────┐ ┌──────────┐ ┌──────────────┐
-│ SQLite │ │ AI Model │ │ Weather API  │
-│        │ │ / LLM    │ │              │
-└────────┘ └──────────┘ └──────────────┘
+     ┌───────┼───────────────┬──────────────────┐
+     │       │               │                  │
+     ▼       ▼               ▼                  ▼
+┌──────────┐ ┌─────────────┐ ┌──────────────┐ ┌──────────────┐
+│ SQLite / │ │ Compat.     │ │ AI provider  │ │ Weather      │
+│ Postgres │ │ engine      │ │ (optional)   │ │ provider     │
+└──────────┘ └─────────────┘ └──────────────┘ └──────────────┘
 ```
 
-External services are separated from the primary application logic so that individual components can be modified or replaced independently.
+External services sit behind thin service modules so that individual providers can be replaced without touching application logic. The AI and weather providers are both selected by configuration at startup.
 
 ---
 
-## Recommendation Pipeline
+## Security
 
-A simplified representation of the current concept is:
+The prototype is not deployed, but the backend is written to production expectations in the areas where retrofitting is expensive.
 
-```text
-User Wardrobe
-      │
-      ▼
-Clothing Representation
-      │
-      ├───────────────────┐
-      │                   │
-      ▼                   ▼
-Weather Context      Occasion Context
-      │                   │
-      └─────────┬─────────┘
-                │
-                ▼
-        Candidate Selection
-                │
-                ▼
-       Compatibility Reasoning
-                │
-                ▼
-       Final Outfit Selection
-                │
-                ▼
-    Human-Readable Explanation
-```
+**Authentication.** Accounts use email and password. Passwords are hashed with PBKDF2-HMAC-SHA256 from the standard library; sessions are stateless JWT access tokens. No third-party identity provider is required.
 
-The recommendation system is being developed around the idea that **selection and explanation should be separate concerns**.
+**Authorisation.** Every user-scoped route resolves the account from the bearer token. No endpoint accepts a user identifier from the URL, and every query that touches user-owned data filters on the owner — including the lookup that resolves item identifiers returned by a language model.
 
-A future version should increasingly rely on deterministic filtering and scoring for candidate selection, while generative AI is used where semantic reasoning or natural-language explanation provides additional value.
+**Request forgery.** The product-link endpoint causes the server to fetch a user-supplied URL, so targets are validated: scheme is restricted to HTTP and HTTPS, hostnames are resolved, and private, loopback, link-local, and reserved addresses are rejected. Cloud metadata endpoints are unreachable by construction.
+
+**Abuse and cost.** Every expensive endpoint is rate limited, per user where authenticated and per address otherwise. Outfit generation and AI analysis carry additional per-user daily and hourly quotas, and uploads are size-capped.
+
+**Data protection.** Third-party AI analysis requires explicit opt-in and can be revoked. Account deletion is available inside the application and cascades to wardrobe, outfits, and feedback.
+
+An end-to-end test script (`smoke_test.py`) exercises these behaviours against a running server, including cross-account isolation and the request-forgery protections.
 
 ---
 
@@ -255,9 +244,10 @@ A future version should increasingly rely on deterministic filtering and scoring
 - Python
 - Flask
 - REST API
-- SQLite
-- External AI API integration
-- Weather API integration
+- SQLite (development) / PostgreSQL (production), selected by `DATABASE_URL`
+- PyJWT
+- Pluggable AI provider: Google Gemini or Anthropic Claude, called over HTTPS without a vendor SDK
+- Pluggable weather provider: Open-Meteo (no key required) or OpenWeatherMap
 
 ### Development
 
@@ -281,16 +271,31 @@ LookCheckAI/
 │
 ├── lookcheck-app/
 │   ├── src/
+│   │   ├── api/client.js          # API client, bearer token handling
+│   │   ├── components/            # Clothing card, colourway strip, weather
+│   │   ├── context/AuthContext.js # Session state
+│   │   ├── screens/
+│   │   ├── config.js              # Backend URL resolution
+│   │   └── theme.js               # Design tokens
 │   ├── App.js
 │   ├── app.json
-│   ├── package.json
-│   └── ...
+│   └── package.json
 │
 ├── lookcheck-backend/
 │   ├── services/
-│   ├── app.py
-│   ├── database.py
-│   ├── schema.sql
+│   │   ├── ai_service.py          # Provider transport, extraction, generation
+│   │   ├── compatibility.py       # Colour and style scoring
+│   │   └── weather_service.py     # Weather providers and caching
+│   ├── app.py                     # Routes
+│   ├── auth.py                    # Passwords, tokens, route guard
+│   ├── security.py                # Rate limiting, URL validation
+│   ├── config.py                  # Configuration and validation
+│   ├── database.py                # Data access
+│   ├── schema.sqlite.sql
+│   ├── schema.postgres.sql
+│   ├── smoke_test.py              # End-to-end API test
+│   ├── list_gemini_models.py      # Diagnostic helper
+│   ├── Dockerfile
 │   ├── requirements.txt
 │   └── .env.example
 │
@@ -305,61 +310,57 @@ LookCheckAI/
 
 ### Backend
 
-Move to the backend directory:
-
 ```bash
 cd lookcheck-backend
-```
-
-Install the Python dependencies:
-
-```bash
 pip install -r requirements.txt
+cp .env.example .env
 ```
 
-Create the required environment configuration based on `.env.example`.
-
-Example:
+Every setting has a working default, so the application starts with an empty configuration file. Only `JWT_SECRET` is required, and only in production:
 
 ```env
-ANTHROPIC_API_KEY=
-OPENWEATHER_API_KEY=
-PORT=8000
+JWT_SECRET=
+DATABASE_URL=sqlite:///lookcheck.db
+
+# Optional. Without a key the application runs on the scoring engine alone.
+GEMINI_API_KEY=
+GEMINI_MODEL=gemini-3.5-flash-lite
+
+# Optional. Open-Meteo is used by default and needs no key.
+WEATHER_PROVIDER=open-meteo
 ```
 
-Then start the backend:
+Generate a secret with:
+
+```bash
+python -c "import secrets; print(secrets.token_hex(32))"
+```
+
+Start the server:
 
 ```bash
 python app.py
 ```
 
-The development server is expected to run locally, typically on:
+The startup line reports the active configuration, for example `(ai=gemini, weather=open-meteo)`.
 
-```text
-http://localhost:8000
+Verify the installation against a running server:
+
+```bash
+python smoke_test.py
 ```
 
 ### Mobile Application
 
-Move to the application directory:
-
 ```bash
 cd lookcheck-app
-```
-
-Install dependencies:
-
-```bash
 npm install
-```
-
-Start the Expo development environment:
-
-```bash
 npx expo start
 ```
 
-The application can then be opened using an appropriate Android or iOS development environment.
+During development the backend address is detected automatically from the Expo development server, so no address needs to be configured as long as both run on the same machine. For a production build, set `extra.apiBaseUrl` in `app.json` or the `EXPO_PUBLIC_API_URL` environment variable.
+
+Requires Node.js 20.19.4 or newer.
 
 ---
 
@@ -367,109 +368,75 @@ The application can then be opened using an appropriate Android or iOS developme
 
 LookCheckAI is **not production-ready**.
 
-The repository currently represents an engineering prototype used to develop and test the overall system architecture and recommendation workflow.
+The repository represents an engineering prototype used to develop and test the overall system architecture and recommendation workflow.
 
 | Component | Status |
 |---|---|
-| Mobile UI | In development |
-| Navigation and main user flows | Implemented / evolving |
-| Digital wardrobe | Prototype implemented |
+| Mobile UI | Implemented |
+| Navigation and main user flows | Implemented |
+| Digital wardrobe | Implemented |
 | Clothing storage | Implemented |
+| Authentication and account management | Implemented |
 | Weather integration | Implemented |
+| Outfit compatibility scoring | Implemented |
+| Occasion-aware recommendations | Implemented |
+| Recommendation history | Implemented |
+| Feedback capture | Implemented |
 | AI clothing analysis | Experimental |
-| Outfit recommendation | Experimental |
-| Occasion-aware recommendations | Prototype |
-| Recommendation history | Prototype |
-| Preference learning | Planned |
-| Automated testing | Planned |
-| Production authentication | Planned |
+| AI outfit explanation | Experimental |
+| Preference learning | Basic |
+| Image storage | Not implemented |
+| Automated unit testing | Planned |
 | Production deployment | Not available |
-
-The status of individual components may change frequently while the project is under active development.
 
 ---
 
 ## Current Limitations
 
+### Image Storage
+
+Photographs used for clothing analysis are not retained. Items added from a product link keep the store's image URL, but items photographed by the user are represented by a colour swatch. Persistent image storage is the next significant piece of work.
+
 ### Recommendation Evaluation
 
-The recommendation system has not yet been evaluated against a formal fashion compatibility benchmark or a sufficiently large human-labelled dataset.
+The scoring rules encode conventional styling heuristics but have not been evaluated against a formal fashion compatibility benchmark or a human-labelled dataset.
 
-Recommendations should therefore be interpreted as experimental system outputs rather than objectively optimal clothing combinations.
+Recommendations should be interpreted as experimental system outputs rather than objectively optimal clothing combinations.
 
 ### AI Reliability
 
-Part of the current workflow relies on generative AI.
-
-Large language model outputs are probabilistic and may occasionally produce inconsistent reasoning or incorrectly interpret clothing attributes.
-
-Future development should reduce unnecessary dependence on generative reasoning by introducing more explicit rules, validation, and compatibility scoring.
+Attribute extraction relies on generative AI, whose output is probabilistic and may misinterpret garments. Extraction is normalised and validated, and outfit selection is constrained to a pre-scored shortlist, but attribute errors still propagate into recommendations.
 
 ### Clothing Representation
 
-The current representation of wardrobe items uses a relatively limited collection of attributes.
-
-Possible future attributes include:
-
-- material;
-- fit;
-- season;
-- pattern;
-- layering compatibility;
-- formalness;
-- garment condition;
-- learned image embeddings.
+The current representation uses a limited collection of attributes. Possible future additions include material, fit, season, pattern, layering compatibility, formality, garment condition, and learned image embeddings.
 
 ### Personalization
 
-The current system has limited long-term user modelling.
+Preference learning is currently limited to demoting items from rejected outfits. Longer-term modelling of preferred colours, combinations, and weather tolerance is not yet implemented.
 
-Future versions may use explicit and implicit feedback to learn:
+### Persistence and Scale
 
-- preferred colors;
-- preferred combinations;
-- frequently rejected recommendations;
-- favorite clothing items;
-- preferred style;
-- tolerance to different weather conditions.
-
-### Persistence
-
-The current persistence architecture is designed primarily for development and prototyping.
-
-A production implementation would require a more complete data layer together with authentication, authorization, synchronization, backup, and migration mechanisms.
+Rate-limit counters are held in process memory, so they reset on restart and are counted per worker. A multi-worker deployment would need shared storage for them.
 
 ### External Services
 
-Some application functionality depends on third-party services.
-
-Availability, latency, API limits, and changes to external services may therefore affect application behavior.
+Availability, latency, API limits, and changes to third-party providers may affect application behavior. Both the AI and weather layers degrade to functioning defaults when a provider is unavailable.
 
 ---
 
 ## Planned Development
 
-Current and proposed areas of development include:
-
-- improving clothing attribute extraction;
-- separating deterministic constraints from LLM reasoning;
-- compatibility scoring between wardrobe items;
-- more advanced weather-based filtering;
-- preference learning from user feedback;
-- recommendation diversity;
-- duplicate outfit prevention;
+- persistent image storage and thumbnails;
+- background removal for clothing images;
+- production deployment configuration;
+- pattern and material attributes;
 - multi-day outfit planning;
 - seasonal wardrobe analysis;
-- wardrobe statistics;
-- automated backend testing;
-- automated API testing;
-- improved error handling;
-- image preprocessing;
-- background removal for clothing images;
-- improved application state management;
-- user authentication;
-- cloud persistence;
-- deployment configuration.
+- wardrobe statistics and neglected-item detection;
+- richer preference modelling from accumulated feedback;
+- automated unit tests alongside the existing end-to-end suite;
+- shared rate-limit storage for multi-worker deployment.
 
 ---
 
@@ -480,7 +447,7 @@ LookCheckAI is primarily an engineering project, but several aspects of the prob
 The project provides a practical environment for experimenting with:
 
 - multimodal information processing;
-- structured extraction from images;
+- structured extraction from images and web pages;
 - context-aware recommendation;
 - constrained recommendation;
 - LLM-assisted reasoning;
@@ -489,65 +456,17 @@ The project provides a practical environment for experimenting with:
 - human-AI interaction;
 - mobile AI application architecture.
 
-One of the central design questions is how much of the recommendation process should be performed by deterministic software and how much should be delegated to a generative model.
+The central design question is how much of the recommendation process should be performed by deterministic software and how much delegated to a generative model.
 
 A purely generative system is flexible but difficult to evaluate and control. A purely rule-based system is predictable but may struggle with semantic concepts such as style compatibility.
 
-LookCheckAI therefore explores a hybrid direction in which explicit constraints and structured data define the candidate space while AI components support higher-level interpretation and explanation.
-
----
-
-## Long-Term Direction
-
-The intended architecture is moving toward a pipeline similar to:
-
-```text
-                    User
-                      │
-                      ▼
-             Digital Wardrobe
-                      │
-                      ▼
-            Feature Extraction
-                      │
-                      ▼
-             Structured Items
-                      │
-          ┌───────────┼───────────┐
-          │           │           │
-          ▼           ▼           ▼
-       Weather     Occasion    Preferences
-          │           │           │
-          └───────────┼───────────┘
-                      │
-                      ▼
-             Hard Constraints
-                      │
-                      ▼
-           Candidate Generation
-                      │
-                      ▼
-            Compatibility Score
-                      │
-                      ▼
-               AI Reasoning
-                      │
-                      ▼
-           Final Recommendation
-                      │
-                      ▼
-               User Feedback
-                      │
-                      └──────────────► Preference Model
-```
-
-This architecture would make recommendations easier to inspect, reproduce, test, and improve.
+LookCheckAI resolves this by giving each side the work it is better suited to: explicit constraints and scoring define and rank the candidate space, while the model contributes interpretation and explanation over an already-validated shortlist. The practical test of this split is that removing the model degrades the output rather than breaking it.
 
 ---
 
 ## Purpose
 
-LookCheckAI is developed primarily as:
+LookCheckAI is developed as:
 
 - an experimental AI application;
 - a full-stack engineering project;
@@ -561,7 +480,7 @@ The emphasis is on building and understanding the complete system rather than pr
 
 ## Disclaimer
 
-LookCheckAI is currently an experimental project.
+LookCheckAI is an experimental project.
 
 Recommendations produced by the application are subjective and should not be treated as professional fashion advice.
 
