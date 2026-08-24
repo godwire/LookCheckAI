@@ -8,6 +8,9 @@ import { colors, space, radius, type, CATEGORY_LABELS } from '../theme';
 
 const FILTERS = ['all', 'top', 'bottom', 'outerwear', 'footwear', 'accessory'];
 
+const CHIP_HEIGHT = 34;
+const FILTER_ROW_HEIGHT = CHIP_HEIGHT + space.lg;
+
 export default function WardrobeScreen({ navigation }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -26,16 +29,25 @@ export default function WardrobeScreen({ navigation }) {
 
   useFocusEffect(useCallback(() => { loadWardrobe(); }, [loadWardrobe]));
 
-  const visible = useMemo(
-    () => (filter === 'all' ? items : items.filter((i) => i.category === filter)),
-    [items, filter]
-  );
-
   const counts = useMemo(() => {
     const map = {};
     items.forEach((item) => { map[item.category] = (map[item.category] || 0) + 1; });
     return map;
   }, [items]);
+
+  const availableFilters = useMemo(
+    () => FILTERS.filter((value) => value === 'all' || counts[value]),
+    [counts]
+  );
+
+  // If the last item of the active category is removed, that filter disappears
+  // from the row - fall back to "everything" instead of showing a dead screen.
+  const activeFilter = availableFilters.includes(filter) ? filter : 'all';
+
+  const visible = useMemo(
+    () => (activeFilter === 'all' ? items : items.filter((i) => i.category === activeFilter)),
+    [items, activeFilter]
+  );
 
   function confirmDelete(item) {
     Alert.alert(
@@ -73,25 +85,35 @@ export default function WardrobeScreen({ navigation }) {
         </TouchableOpacity>
       </View>
 
+      {/*
+        The filter row sits in a fixed-height container. Without it the row is
+        free to shrink once the list below fills the screen, which clipped the
+        chips. The row also bleeds past the screen padding so chips scroll off
+        the edge rather than stopping short of it.
+      */}
       {items.length > 0 && (
-        <FlatList
-          horizontal
-          data={FILTERS.filter((f) => f === 'all' || counts[f])}
-          keyExtractor={(f) => f}
-          showsHorizontalScrollIndicator={false}
-          style={styles.filters}
-          contentContainerStyle={styles.filtersContent}
-          renderItem={({ item: value }) => (
-            <TouchableOpacity
-              style={[styles.filter, filter === value && styles.filterActive]}
-              onPress={() => setFilter(value)}
-            >
-              <Text style={[styles.filterText, filter === value && styles.filterTextActive]}>
-                {value === 'all' ? 'Everything' : CATEGORY_LABELS[value]}
-              </Text>
-            </TouchableOpacity>
-          )}
-        />
+        <View style={styles.filterRow}>
+          <FlatList
+            horizontal
+            data={availableFilters}
+            keyExtractor={(value) => value}
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.filterContent}
+            renderItem={({ item: value }) => {
+              const selected = activeFilter === value;
+              return (
+                <TouchableOpacity
+                  style={[styles.chip, selected && styles.chipActive]}
+                  onPress={() => setFilter(value)}
+                >
+                  <Text style={[styles.chipText, selected && styles.chipTextActive]}>
+                    {value === 'all' ? 'Everything' : CATEGORY_LABELS[value]}
+                  </Text>
+                </TouchableOpacity>
+              );
+            }}
+          />
+        </View>
       )}
 
       {items.length === 0 && !loading ? (
@@ -106,6 +128,7 @@ export default function WardrobeScreen({ navigation }) {
         </View>
       ) : (
         <FlatList
+          style={styles.list}
           data={visible}
           keyExtractor={(item) => String(item.id)}
           renderItem={({ item }) => (
@@ -113,7 +136,7 @@ export default function WardrobeScreen({ navigation }) {
           )}
           onRefresh={loadWardrobe}
           refreshing={loading}
-          contentContainerStyle={styles.list}
+          contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
         />
       )}
@@ -122,8 +145,13 @@ export default function WardrobeScreen({ navigation }) {
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: colors.ink, paddingHorizontal: space.xl, paddingTop: 72 },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end' },
+  screen: { flex: 1, backgroundColor: colors.ink, paddingTop: 72 },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-end',
+    paddingHorizontal: space.xl,
+  },
   eyebrow: { ...type.label, marginBottom: space.sm },
   display: { ...type.display },
   add: {
@@ -135,22 +163,39 @@ const styles = StyleSheet.create({
     marginBottom: space.xs,
   },
   addText: { color: colors.text, fontWeight: '700', fontSize: 14 },
-  filters: { flexGrow: 0, marginTop: space.lg, marginBottom: space.md },
-  filtersContent: { paddingRight: space.xl },
-  filter: {
+
+  filterRow: {
+    height: FILTER_ROW_HEIGHT,
+    flexGrow: 0,
+    flexShrink: 0,          // the fix: stop the list below squeezing this row
+    justifyContent: 'center',
+    marginTop: space.lg,
+  },
+  filterContent: {
+    alignItems: 'center',
+    paddingHorizontal: space.xl,   // bleeds to the screen edge when scrolled
+  },
+  chip: {
+    height: CHIP_HEIGHT,
+    justifyContent: 'center',
     borderRadius: radius.pill,
-    paddingVertical: space.xs + 2,
     paddingHorizontal: space.md,
     marginRight: space.sm,
     backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.line,
   },
-  filterActive: { backgroundColor: colors.text, borderColor: colors.text },
-  filterText: { color: colors.textMuted, fontSize: 13 },
-  filterTextActive: { color: colors.ink, fontWeight: '700' },
-  list: { paddingTop: space.sm, paddingBottom: space.xxxl },
-  empty: { paddingTop: space.xxxl },
+  chipActive: { backgroundColor: colors.text, borderColor: colors.text },
+  chipText: { color: colors.textMuted, fontSize: 13 },
+  chipTextActive: { color: colors.ink, fontWeight: '700' },
+
+  list: { flex: 1 },
+  listContent: {
+    paddingHorizontal: space.xl,
+    paddingTop: space.md,
+    paddingBottom: space.xxxl,
+  },
+  empty: { paddingTop: space.xxxl, paddingHorizontal: space.xl },
   emptyTitle: { ...type.heading, marginBottom: space.sm },
   emptyBody: { ...type.bodyMuted, marginBottom: space.xl },
   primary: {
