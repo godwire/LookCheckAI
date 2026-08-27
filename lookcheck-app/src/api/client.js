@@ -11,6 +11,17 @@
 
 import { API_BASE_URL } from '../config';
 
+/**
+ * Processed wardrobe tiles are served by our own backend as relative paths
+ * ("/media/..."), while items added from a shop keep the store's absolute
+ * URL. Everything that renders an image goes through here.
+ */
+export function resolveImageUrl(url) {
+  if (!url) return null;
+  if (url.startsWith('http://') || url.startsWith('https://')) return url;
+  return `${API_BASE_URL}${url}`;
+}
+
 let authToken = null;
 let onUnauthorized = null;
 
@@ -95,6 +106,9 @@ export const api = {
   deleteWardrobeItem: (itemId) => request(`/api/wardrobe/${itemId}`, { method: 'DELETE' }),
 
   /**
+   * Returns { image_kind, candidates: [...] } - one candidate per garment
+   * found in the photo, each with its own processed catalogue tile.
+   *
    * Note: we deliberately do NOT set a Content-Type header here. React Native
    * generates the multipart boundary itself, and setting the header manually
    * strips it, which silently breaks the upload.
@@ -104,6 +118,19 @@ export const api = {
     formData.append('photo', { uri: photoUri, name: 'photo.jpg', type: 'image/jpeg' });
     return request('/api/wardrobe/analyze-photo', { method: 'POST', body: formData });
   },
+
+  /**
+   * Stores a photo the user chose themselves, with no AI involved. Returns
+   * { image_url } - the same normalised tile every other route produces.
+   */
+  uploadItemPhoto: (photoUri) => {
+    const formData = new FormData();
+    formData.append('photo', { uri: photoUri, name: 'photo.jpg', type: 'image/jpeg' });
+    return request('/api/wardrobe/photo', { method: 'POST', body: formData });
+  },
+
+  updateWardrobeItem: (itemId, fields) =>
+    request(`/api/wardrobe/${itemId}`, { method: 'PATCH', body: JSON.stringify(fields) }),
 
   parseLink: (url) =>
     request('/api/wardrobe/parse-link', { method: 'POST', body: JSON.stringify({ url }) }),

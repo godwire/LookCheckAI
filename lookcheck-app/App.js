@@ -13,6 +13,7 @@ import TodayLookScreen from './src/screens/TodayLookScreen';
 import EventLookScreen from './src/screens/EventLookScreen';
 import WardrobeScreen from './src/screens/WardrobeScreen';
 import AddItemScreen from './src/screens/AddItemScreen';
+import EditItemScreen from './src/screens/EditItemScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 
 const Tab = createBottomTabNavigator();
@@ -43,6 +44,7 @@ function WardrobeStackScreen() {
     <WardrobeStack.Navigator screenOptions={{ headerShown: false }}>
       <WardrobeStack.Screen name="WardrobeList" component={WardrobeScreen} />
       <WardrobeStack.Screen name="AddItem" component={AddItemScreen} />
+      <WardrobeStack.Screen name="EditItem" component={EditItemScreen} />
     </WardrobeStack.Navigator>
   );
 }

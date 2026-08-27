@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo, useState } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, Alert } from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, Alert, LayoutAnimation } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 
 import { api } from '../api/client';
@@ -15,6 +15,7 @@ export default function WardrobeScreen({ navigation }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState('all');
+  const [expandedId, setExpandedId] = useState(null);
 
   const loadWardrobe = useCallback(async () => {
     setLoading(true);
@@ -49,6 +50,12 @@ export default function WardrobeScreen({ navigation }) {
     [items, activeFilter]
   );
 
+  // One card open at a time: two open panels turn the list into a wall of text
+  // and lose the comparison the wardrobe is for.
+  function toggle(itemId) {
+    setExpandedId((current) => (current === itemId ? null : itemId));
+  }
+
   function confirmDelete(item) {
     Alert.alert(
       'Remove this piece?',
@@ -62,6 +69,8 @@ export default function WardrobeScreen({ navigation }) {
 
   async function handleDelete(itemId) {
     const snapshot = items;
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setExpandedId(null);
     setItems((prev) => prev.filter((i) => i.id !== itemId));
     try {
       await api.deleteWardrobeItem(itemId);
@@ -104,7 +113,7 @@ export default function WardrobeScreen({ navigation }) {
               return (
                 <TouchableOpacity
                   style={[styles.chip, selected && styles.chipActive]}
-                  onPress={() => setFilter(value)}
+                  onPress={() => { setExpandedId(null); setFilter(value); }}
                 >
                   <Text style={[styles.chipText, selected && styles.chipTextActive]}>
                     {value === 'all' ? 'Everything' : CATEGORY_LABELS[value]}
@@ -132,7 +141,13 @@ export default function WardrobeScreen({ navigation }) {
           data={visible}
           keyExtractor={(item) => String(item.id)}
           renderItem={({ item }) => (
-            <ClothingCard item={item} onDelete={() => confirmDelete(item)} />
+            <ClothingCard
+              item={item}
+              expanded={expandedId === item.id}
+              onToggle={() => toggle(item.id)}
+              onEdit={() => navigation.navigate('EditItem', { item })}
+              onDelete={() => confirmDelete(item)}
+            />
           )}
           onRefresh={loadWardrobe}
           refreshing={loading}
@@ -167,14 +182,11 @@ const styles = StyleSheet.create({
   filterRow: {
     height: FILTER_ROW_HEIGHT,
     flexGrow: 0,
-    flexShrink: 0,          // the fix: stop the list below squeezing this row
+    flexShrink: 0,
     justifyContent: 'center',
     marginTop: space.lg,
   },
-  filterContent: {
-    alignItems: 'center',
-    paddingHorizontal: space.xl,   // bleeds to the screen edge when scrolled
-  },
+  filterContent: { alignItems: 'center', paddingHorizontal: space.xl },
   chip: {
     height: CHIP_HEIGHT,
     justifyContent: 'center',

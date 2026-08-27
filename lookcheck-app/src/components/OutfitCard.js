@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 
 import ClothingCard from './ClothingCard';
 import ColorwayStrip from './ColorwayStrip';
+import OutfitComposition from './OutfitComposition';
 import { colors, space, radius, type } from '../theme';
 
 /**
@@ -19,6 +20,7 @@ export default function OutfitCard({ outfit, onFeedback }) {
 
   return (
     <View>
+      <OutfitComposition items={items} />
       <ColorwayStrip items={items} />
 
       {outfit.reasoning ? (
@@ -30,7 +32,7 @@ export default function OutfitCard({ outfit, onFeedback }) {
 
       <Text style={styles.sectionLabel}>The pieces</Text>
       {items.map((item) => (
-        <ClothingCard key={item.id} item={item} />
+        <ClothingCard key={item.id} item={item} compact />
       ))}
 
       {outfit.styling_tip ? (

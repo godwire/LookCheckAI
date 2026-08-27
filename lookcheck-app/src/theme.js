@@ -31,6 +31,10 @@ export const colors = {
   negative: '#C9827A',
 
   overlay: 'rgba(19, 17, 16, 0.86)',
+
+  // Garment tiles are photographed against white, the way a catalogue does it.
+  // The interface stays dark; the clothes sit on paper.
+  tile: '#FFFFFF',
 };
 
 export const space = {
