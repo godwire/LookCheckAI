@@ -20,9 +20,11 @@ weather-aware outfit. The AI improves the result, it isn't a prerequisite.
 
 import base64
 import html as html_lib
+import logging
 import json
 import re
 import time
+from urllib.parse import urljoin
 
 import requests
 
@@ -34,10 +36,17 @@ ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
+log = logging.getLogger("lookcheck.ai")
+
 # Free-tier Gemini returns 503 "model overloaded" fairly often. Retrying with
 # a short backoff turns most of those into a successful request.
 GEMINI_MAX_ATTEMPTS = 3
 GEMINI_BACKOFF_SECONDS = 1.5
+
+# Gemini 2.5 accepts generationConfig.thinkingConfig; Gemini 3 rejects it.
+# Rather than asking the user to match a setting to a model name, the first
+# 400 flips this off for the rest of the process.
+_thinking_config_supported = True
 
 CATEGORIES = ("top", "bottom", "outerwear", "footwear", "accessory")
 STYLES = ("Casual", "Streetwear", "Business", "Minimalist", "Sport", "Formal")
@@ -89,7 +98,10 @@ def _complete_anthropic(prompt, image_bytes, media_type, max_tokens):
             },
         })
     content.append({"type": "text", "text": prompt})
+    return _complete_anthropic_content(content, max_tokens)
 
+
+def _complete_anthropic_content(content, max_tokens):
     payload = {
         "model": config.ANTHROPIC_MODEL,
         "max_tokens": max_tokens,
@@ -116,6 +128,23 @@ def _complete_anthropic(prompt, image_bytes, media_type, max_tokens):
     return "\n".join(blocks)
 
 
+def _gemini_payload(parts, max_tokens, with_thinking_config):
+    generation_config = {"maxOutputTokens": max_tokens, "temperature": 0.7}
+
+    if with_thinking_config:
+        # Gemini 2.5 reasons before answering by default, and that reasoning is
+        # billed against maxOutputTokens - on a small budget the whole
+        # allowance is spent thinking and the reply comes back empty. We want
+        # structured extraction, not deliberation.
+        #
+        # Gemini 3 controls this differently and rejects the 2.5 field with
+        # INVALID_ARGUMENT, so this is sent optimistically and dropped for the
+        # rest of the session the first time a model refuses it.
+        generation_config["thinkingConfig"] = {"thinkingBudget": 0}
+
+    return {"contents": [{"parts": parts}], "generationConfig": generation_config}
+
+
 def _complete_gemini(prompt, image_bytes, media_type, max_tokens):
     parts = [{"text": prompt}]
     if image_bytes:
@@ -125,21 +154,13 @@ def _complete_gemini(prompt, image_bytes, media_type, max_tokens):
                 "data": base64.b64encode(image_bytes).decode("utf-8"),
             }
         })
+    return _complete_gemini_parts(parts, max_tokens)
+
+
+def _complete_gemini_parts(parts, max_tokens):
+    global _thinking_config_supported
 
     url = f"{GEMINI_API_URL}/{config.GEMINI_MODEL}:generateContent"
-    payload = {
-        "contents": [{"parts": parts}],
-        "generationConfig": {
-            "maxOutputTokens": max_tokens,
-            "temperature": 0.7,
-            # Gemini 2.5+ reasons before answering by default, and that
-            # reasoning is billed against maxOutputTokens. On a small budget
-            # the whole allowance is spent thinking and the reply comes back
-            # with no text at all. We want structured extraction, not
-            # deliberation, so the budget is set to zero.
-            "thinkingConfig": {"thinkingBudget": 0},
-        },
-    }
     headers = {
         "x-goog-api-key": config.GEMINI_API_KEY,
         "content-type": "application/json",
@@ -150,6 +171,8 @@ def _complete_gemini(prompt, image_bytes, media_type, max_tokens):
     # failing the user's request on the first attempt.
     last_error = None
     for attempt in range(GEMINI_MAX_ATTEMPTS):
+        payload = _gemini_payload(parts, max_tokens, _thinking_config_supported)
+
         try:
             response = requests.post(url, headers=headers, json=payload, timeout=config.AI_TIMEOUT)
         except requests.RequestException as exc:
@@ -165,6 +188,13 @@ def _complete_gemini(prompt, image_bytes, media_type, max_tokens):
             detail = response.json().get("error", {}).get("message", "")
         except ValueError:
             detail = response.text[:200]
+
+        # The model refused one of our generation options. Drop the optional
+        # one and try again immediately - this is what makes the same code
+        # work across Gemini 2.5 and 3.x without the user choosing a setting.
+        if response.status_code == 400 and _thinking_config_supported:
+            _thinking_config_supported = False
+            continue
 
         if response.status_code == 404:
             raise AIServiceError(
@@ -212,6 +242,31 @@ def _read_gemini_text(data):
         raise AIServiceError("The AI declined to process this image or page.")
 
     raise AIServiceError(f"The AI returned no text (finish reason: {finish_reason or 'unknown'}).")
+
+
+def _complete_multi(prompt, images, max_tokens=800):
+    """Like `_complete`, but carries several images in one request - which is
+    what lets a single call both read the page and choose between its photos."""
+    if config.AI_PROVIDER == "gemini":
+        parts = [
+            {"inline_data": {"mime_type": media_type or "image/jpeg",
+                             "data": base64.b64encode(data).decode("utf-8")}}
+            for data, media_type in images
+        ]
+        parts.append({"text": prompt})
+        return _complete_gemini_parts(parts, max_tokens)
+
+    if config.AI_PROVIDER == "anthropic":
+        content = [
+            {"type": "image",
+             "source": {"type": "base64", "media_type": media_type or "image/jpeg",
+                        "data": base64.b64encode(data).decode("utf-8")}}
+            for data, media_type in images
+        ]
+        content.append({"type": "text", "text": prompt})
+        return _complete_anthropic_content(content, max_tokens)
+
+    raise AIServiceError("No AI provider is configured.")
 
 
 def _extract_json(text):
@@ -277,19 +332,197 @@ def _normalize_attributes(raw, source_link=None, image_url=None):
 
 
 # ---------------------------------------------------------------------------
-# 1. Photo -> structured clothing attributes
+# 1. Photo -> detected garments with locations
 # ---------------------------------------------------------------------------
 
-def analyze_clothing_photo(image_bytes, media_type="image/jpeg"):
-    if not is_live():
-        return _mock_clothing_attributes()
+GARMENT_TYPES = (
+    "t-shirt, shirt, blouse, hoodie, sweatshirt, sweater, cardigan, jacket, coat, "
+    "blazer, vest, trousers, jeans, shorts, skirt, dress, jumpsuit, shoes, boots, "
+    "trainers, sandals, bag, hat, scarf, belt, other"
+)
 
-    prompt = (
-        "This is a photo of a single clothing item from someone's wardrobe. "
-        "Identify it and describe it.\n\n" + CLOTHING_ATTRIBUTES_SCHEMA
+DETECTION_SCHEMA = """Respond with ONLY a JSON object (no prose, no markdown fences):
+{
+  "usable": true | false,
+  "reason": "<if usable is false, one short sentence explaining why>",
+  "image_kind": "product_photo" | "worn" | "flat_lay" | "screenshot" | "unclear",
+  "items": [
+    {
+      "garment_type": "<one of: %s>",
+      "category": "top" | "bottom" | "outerwear" | "footwear" | "accessory",
+      "color": "<main colour, one or two words>",
+      "style": "<one of: Casual, Streetwear, Business, Minimalist, Sport, Formal>",
+      "warmth_level": <integer 1-5, 1 = very light/summer, 5 = very warm/winter>,
+      "description": "<one short sentence describing this garment>",
+      "confidence": <0.0-1.0, how certain you are about this garment>,
+      "is_primary": true | false,
+      "bounding_box": {
+        "x_min": <0.0-1.0>, "y_min": <0.0-1.0>,
+        "x_max": <0.0-1.0>, "y_max": <0.0-1.0>
+      }
+    }
+  ]
+}""" % GARMENT_TYPES
+
+DETECTION_PROMPT = """Identify every distinct item of clothing in this image.
+
+The image may be a plain product photo, a garment laid flat, a photo of a person
+wearing several things, or a screenshot of a shop or social media page.
+
+For each garment, give a bounding box around THAT GARMENT ONLY, as fractions of
+the image width and height, where 0,0 is the top-left corner.
+
+Rules for the boxes:
+- Box the garment, not the person wearing it. A t-shirt box stops at the
+  shoulders and the hem; it must not include the head, the legs, or the trousers.
+  Trousers are boxed from the waistband to the hems: no torso, no arms, no shoes.
+  Shoes are boxed at the feet only.
+- A box that covers most of the image is wrong whenever a person is visible -
+  that is a box around the person. Tighten it to the garment.
+- If the image is a screenshot, box only the garment in the photograph. Exclude
+  page furniture: menus, prices, buttons, titles, comments, other products.
+- Mark the garment the image is most obviously about as "is_primary": true.
+  Exactly one item may be primary.
+- List at most %d garments, most prominent first.
+
+Set "usable": false if there is no clothing in the image, if the clothing is
+almost entirely hidden, or if the image is too unclear to identify anything.
+
+%s"""
+
+# Below this the model is guessing rather than recognising.
+MIN_DETECTION_CONFIDENCE = 0.35
+
+
+def _normalize_box(raw):
+    """Accepts the several shapes a model may answer with.
+
+    Gemini's own convention is a flat array in [y_min, x_min, y_max, x_max]
+    order scaled 0-1000, and it falls back to that even when asked for named
+    keys. Reading only the named form meant a perfectly good box was silently
+    discarded and nothing ever got cropped.
+    """
+    if raw is None:
+        return None
+
+    values = None
+
+    if isinstance(raw, dict):
+        # Named keys, in any of the spellings models produce.
+        aliases = {
+            "x_min": ("x_min", "xmin", "left", "x1"),
+            "y_min": ("y_min", "ymin", "top", "y1"),
+            "x_max": ("x_max", "xmax", "right", "x2"),
+            "y_max": ("y_max", "ymax", "bottom", "y2"),
+        }
+        named = {}
+        for key, options in aliases.items():
+            for option in options:
+                if option in raw:
+                    named[key] = raw[option]
+                    break
+        if len(named) == 4:
+            try:
+                values = [float(named["x_min"]), float(named["y_min"]),
+                          float(named["x_max"]), float(named["y_max"])]
+            except (TypeError, ValueError):
+                return None
+        else:
+            # Some replies nest the array under box_2d or similar.
+            for key in ("box_2d", "box", "bbox", "coordinates"):
+                if isinstance(raw.get(key), (list, tuple)):
+                    return _normalize_box(raw[key])
+            return None
+
+    elif isinstance(raw, (list, tuple)) and len(raw) == 4:
+        try:
+            y_min, x_min, y_max, x_max = (float(v) for v in raw)
+        except (TypeError, ValueError):
+            return None
+        values = [x_min, y_min, x_max, y_max]
+
+    else:
+        return None
+
+    # Anything above 1 is on the 0-1000 scale.
+    if any(v > 1.0 for v in values):
+        values = [v / 1000.0 for v in values]
+
+    x_min, y_min, x_max, y_max = (max(0.0, min(1.0, v)) for v in values)
+    if x_max <= x_min or y_max <= y_min:
+        return None
+
+    return {"x_min": x_min, "y_min": y_min, "x_max": x_max, "y_max": y_max}
+
+
+def detect_clothing_items(image_bytes, media_type="image/jpeg"):
+    """Returns (items, meta).
+
+    Each item carries normalised attributes plus `bounding_box`, `confidence`
+    and `is_primary`. The bounding box is what lets the image pipeline cut one
+    garment out of a photo containing a whole person or a whole web page.
+    """
+    if not is_live():
+        return [dict(_mock_clothing_attributes(), bounding_box=None,
+                     confidence=0.0, is_primary=True, garment_type="t-shirt")], \
+               {"image_kind": "unclear", "provider": "mock"}
+
+    prompt = DETECTION_PROMPT % (config.MAX_DETECTED_ITEMS, DETECTION_SCHEMA)
+    parsed = _extract_json(
+        _complete(prompt, image_bytes=image_bytes, media_type=media_type, max_tokens=1400)
     )
-    raw = _complete(prompt, image_bytes=image_bytes, media_type=media_type, max_tokens=800)
-    return _normalize_attributes(_extract_json(raw))
+
+    if not parsed.get("usable", True):
+        raise AIServiceError(
+            str(parsed.get("reason") or "No clothing could be identified in this image.")
+        )
+
+    raw_items = parsed.get("items") or []
+    if not isinstance(raw_items, list) or not raw_items:
+        raise AIServiceError("No clothing could be identified in this image.")
+
+    items = []
+    for raw in raw_items[:config.MAX_DETECTED_ITEMS]:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            confidence = float(raw.get("confidence", 0.5))
+        except (TypeError, ValueError):
+            confidence = 0.5
+        if confidence < MIN_DETECTION_CONFIDENCE:
+            continue
+
+        item = _normalize_attributes(raw)
+        item["garment_type"] = str(raw.get("garment_type") or "").strip()[:40] or None
+        item["bounding_box"] = _normalize_box(raw.get("bounding_box"))
+        item["confidence"] = round(max(0.0, min(1.0, confidence)), 2)
+        item["is_primary"] = bool(raw.get("is_primary"))
+        items.append(item)
+
+    if not items:
+        raise AIServiceError(
+            "Nothing in this image could be identified confidently enough to add. "
+            "Try a clearer photo of the item."
+        )
+
+    # Exactly one primary, and it leads the list.
+    if not any(item["is_primary"] for item in items):
+        items[0]["is_primary"] = True
+    items.sort(key=lambda i: (not i["is_primary"], -i["confidence"]))
+    for item in items[1:]:
+        item["is_primary"] = False
+
+    return items, {
+        "image_kind": str(parsed.get("image_kind") or "unclear"),
+        "provider": provider(),
+    }
+
+
+def analyze_clothing_photo(image_bytes, media_type="image/jpeg"):
+    """Attributes of the single most prominent garment. Kept for callers that
+    do not care about the other items in the frame."""
+    items, _ = detect_clothing_items(image_bytes, media_type)
+    return items[0]
 
 
 # ---------------------------------------------------------------------------
@@ -352,6 +585,97 @@ def _walk_for_product(node):
     return None
 
 
+IMG_TAG_PATTERN = re.compile(r"<img\s+([^>]+?)/?>", re.IGNORECASE)
+
+# Image URLs anywhere in the document, including inside the JSON blobs that
+# galleries are configured with.
+IMAGE_URL_PATTERN = re.compile(
+    r"""(?:https?:)?//[^\s"'<>\\]+?\.(?:jpe?g|png|webp)(?:\?[^\s"'<>\\]*)?""",
+    re.IGNORECASE,
+)
+
+JUNK_IMAGE_WORDS = (
+    "logo", "icon", "sprite", "banner", "payment", "flag", "placeholder",
+    "loader", "spinner", "avatar", "badge", "pixel", "tracking", "favicon",
+    "watermark", "swatch", "thumb-nav", "size-guide",
+)
+
+
+def _looks_like_product_image(url):
+    lowered = url.lower()
+    if any(word in lowered for word in JUNK_IMAGE_WORDS):
+        return False
+    return not lowered.endswith((".svg", ".gif"))
+
+
+def _gallery_images(html, base_url):
+    """Every plausible product photo on the page.
+
+    A shop gallery holds several shots of one garment: on a model, and usually
+    one laid flat. Scanning only <img> tags misses most of them, because
+    galleries are typically configured from a JSON blob inside a <script> and
+    rendered by the browser. So the whole document is scanned for image URLs,
+    including the escaped ones inside JSON.
+    """
+    found, seen = [], set()
+
+    def add(candidate):
+        resolved = _absolute_url(base_url, candidate)
+        if not resolved or not _looks_like_product_image(resolved):
+            return
+        resolved = _prefer_large_variant(resolved)
+        if resolved not in seen:
+            seen.add(resolved)
+            found.append(resolved)
+
+    for raw_attrs in IMG_TAG_PATTERN.findall(html):
+        attrs = {k.lower(): v for k, v in ATTR_PATTERN.findall(raw_attrs)}
+        add(attrs.get("src") or attrs.get("data-src") or attrs.get("data-original")
+            or (attrs.get("srcset") or "").split(" ")[0])
+
+    # JSON embeds slashes as \/ - unescape before matching.
+    for match in IMAGE_URL_PATTERN.findall(html.replace("\\/", "/")):
+        add(match)
+
+    return found
+
+
+CACHE_SIZE_PATTERN = re.compile(r"(/cache/[^/]+/)(\d{2,4})(/)")
+
+
+def _prefer_large_variant(url):
+    """Galleries list thumbnails; the same photo at full size differs only by a
+    number in the path. Upgrading it costs nothing and gives the model - and
+    the wardrobe tile - something worth looking at."""
+    match = CACHE_SIZE_PATTERN.search(url)
+    if not match:
+        return url
+    try:
+        size = int(match.group(2))
+    except ValueError:
+        return url
+    if size >= 960:
+        return url
+    return CACHE_SIZE_PATTERN.sub(lambda m: f"{m.group(1)}960{m.group(3)}", url, count=1)
+
+
+def _rank_by_product_family(urls, reference):
+    """Photos of the same garment share a long path prefix with the main
+    image. Ranking by that prefix pushes the other shots of THIS product above
+    unrelated pictures elsewhere on the page."""
+    if not reference:
+        return urls
+
+    def shared_prefix(url):
+        limit = min(len(url), len(reference))
+        count = 0
+        while count < limit and url[count] == reference[count]:
+            count += 1
+        return count
+
+    return sorted(urls, key=shared_prefix, reverse=True)
+
+
 def _extract_json_ld_product(html):
     """Most e-commerce platforms embed schema.org Product data for Google.
     It survives client-side rendering, which raw page text often does not."""
@@ -369,11 +693,11 @@ def _extract_json_ld_product(html):
         if isinstance(brand, dict):
             brand = brand.get("name")
 
-        image = product.get("image")
-        if isinstance(image, list):
-            image = image[0] if image else None
-        if isinstance(image, dict):
-            image = image.get("url")
+        raw_image = product.get("image")
+        images = raw_image if isinstance(raw_image, list) else [raw_image]
+        images = [i.get("url") if isinstance(i, dict) else i for i in images]
+        images = [i for i in images if isinstance(i, str)]
+        image = images[0] if images else None
 
         return {
             "name": _clean(product.get("name"), 200),
@@ -382,9 +706,26 @@ def _extract_json_ld_product(html):
             "color": _clean(product.get("color"), 60),
             "material": _clean(product.get("material"), 80),
             "category": _clean(product.get("category"), 100),
-            "image": image if isinstance(image, str) else None,
+            "image": image,
+            "images": images,
         }
     return None
+
+
+def _absolute_url(base_url, candidate):
+    """Stores routinely give image paths as "/img/x.jpg" or "//cdn/x.jpg".
+    Taking only the ones already starting with http silently dropped most of
+    them, which is why link-added items had no picture."""
+    if not candidate:
+        return None
+    candidate = str(candidate).strip()
+    if not candidate:
+        return None
+    try:
+        resolved = urljoin(base_url, candidate)
+    except ValueError:
+        return None
+    return resolved if resolved.startswith(("http://", "https://")) else None
 
 
 def _visible_text(html):
@@ -440,6 +781,8 @@ def fetch_product_page(url):
         "meta": _extract_meta(html),
         "product": _extract_json_ld_product(html),
         "text": _visible_text(html),
+        "gallery": _gallery_images(html, safe_url),
+        "url": safe_url,
     }
 
 
@@ -508,48 +851,211 @@ def _summarize_page(page):
     return "\n".join(lines).strip()
 
 
-def parse_product_link(url):
-    page = fetch_product_page(url)
-
+def _candidate_images(page, url):
+    """Ordered list of plausible product photos, most likely first."""
     product = page.get("product") or {}
     meta = page.get("meta") or {}
-    image_url = None
-    for candidate in (product.get("image"), meta.get("og:image"), meta.get("twitter:image")):
-        if candidate and str(candidate).startswith("http"):
-            image_url = candidate
-            break
+
+    # Ordered by trustworthiness: structured product data first, then the
+    # social-preview tags. The gallery is handled separately below, because it
+    # is the part that needs ranking - it contains other products too.
+    ordered = []
+    ordered.extend(product.get("images") or [])
+    ordered.extend([meta.get("og:image"), meta.get("twitter:image")])
+
+    seen, resolved = set(), []
+    for candidate in ordered:
+        absolute = _absolute_url(url, candidate)
+        if absolute and absolute not in seen and _looks_like_product_image(absolute):
+            seen.add(absolute)
+            resolved.append(absolute)
+
+    # The first entry is the main product shot; anything sharing its path is
+    # another photo of the same garment, so those come next.
+    reference = resolved[0] if resolved else None
+    gallery = _rank_by_product_family(
+        [u for u in (page.get("gallery") or []) if u not in seen], reference
+    )
+    return (resolved + gallery)[:config.MAX_PRODUCT_IMAGES * 2]
+
+
+PHOTO_CLASSIFIER_PROMPT = """You are shown %d photos from one clothing product page, in order.
+
+For each photo, answer two things:
+
+1. "person_visible": true if ANY part of a human body appears - face, hair, neck,
+   torso, arm, hand, leg or foot. Cropped body parts count: a photo showing only
+   someone's legs in the trousers has a person visible. A photo of the garment
+   laid flat, hanging, or floating against a plain backdrop has no person.
+
+2. "garment_coverage": roughly how much of the frame the garment itself fills,
+   from 0.0 to 1.0.
+
+Respond with ONLY this JSON, no prose and no markdown fences:
+{"photos": [{"index": 1, "person_visible": true, "garment_coverage": 0.4}, ...]}
+
+Include one entry per attached photo, in the same order."""
+
+
+def _classify_photos(downloaded):
+    """Asks one narrow question about each photo: is a person in it?
+
+    This is deliberately a separate call from attribute extraction. Asking a
+    single request to read the page, extract attributes, choose a photo, judge
+    whether a person is present and locate the garment produced a good answer
+    to the first two and a careless one to the rest. One question at a time is
+    answered far more reliably, and the choice itself is then made in code.
+    """
+    if len(downloaded) < 2:
+        return None
+
+    prompt = PHOTO_CLASSIFIER_PROMPT % len(downloaded)
+    try:
+        parsed = _extract_json(
+            _complete_multi(prompt, [(b, m) for _u, b, m in downloaded], max_tokens=600)
+        )
+    except AIServiceError as exc:
+        log.info("Photo classification failed (%s); falling back to page order", exc)
+        return None
+
+    entries = parsed.get("photos")
+    if not isinstance(entries, list) or not entries:
+        return None
+
+    verdicts = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            index = int(entry.get("index", 0)) - 1
+        except (TypeError, ValueError):
+            continue
+        if not 0 <= index < len(downloaded):
+            continue
+        try:
+            coverage = float(entry.get("garment_coverage", 0.5))
+        except (TypeError, ValueError):
+            coverage = 0.5
+        verdicts[index] = {
+            "person_visible": bool(entry.get("person_visible", True)),
+            "garment_coverage": max(0.0, min(1.0, coverage)),
+        }
+
+    return verdicts or None
+
+
+def _choose_photo(downloaded, verdicts):
+    """Applies the rule in code rather than leaving it to the model:
+    a photo without a person wins; failing that, the one showing most garment.
+
+    Returns (index, person_visible).
+    """
+    if not verdicts:
+        return 0, True
+
+    clean = [i for i, v in verdicts.items() if not v["person_visible"]]
+    if clean:
+        best = max(clean, key=lambda i: verdicts[i]["garment_coverage"])
+        return best, False
+
+    best = max(verdicts, key=lambda i: verdicts[i]["garment_coverage"])
+    return best, True
+
+
+def parse_product_link(url):
+    """Returns (attributes, image_bytes, media_type).
+
+    Shop galleries hold several photos of the same garment: one on a model,
+    usually one laid flat against white. The flat one makes the better
+    wardrobe tile, so several are downloaded and the model is asked which
+    shows the garment on its own - rather than taking og:image, which is the
+    social-preview shot and nearly always the model.
+    """
+    page = fetch_product_page(url)
+    candidates = _candidate_images(page, url)
 
     if not is_live():
-        return _mock_clothing_attributes(source_link=url, image_url=image_url)
+        return (
+            _mock_clothing_attributes(source_link=url,
+                                      image_url=candidates[0] if candidates else None),
+            None,
+            None,
+        )
+
+    # Download a handful; small failures are silently skipped.
+    downloaded = []
+    for image_url in candidates:
+        if len(downloaded) >= config.MAX_PRODUCT_IMAGES:
+            break
+        image_bytes, media_type = _fetch_image(image_url)
+        if image_bytes:
+            downloaded.append((image_url, image_bytes, media_type))
+
+    log.info(
+        "Product page %s: %d candidate image(s), %d downloaded",
+        url, len(candidates), len(downloaded),
+    )
+    for index, (image_url, image_bytes, _type) in enumerate(downloaded, 1):
+        log.info("  photo %d: %s (%d KB)", index, image_url, len(image_bytes) // 1024)
 
     summary = _summarize_page(page)
-    if not summary:
+    if not summary and not downloaded:
         raise AIServiceError(
             "No product details could be read from that page. The store may render its "
             "content with JavaScript or block automated access - try adding the item by photo."
         )
 
-    # If the page exposes a product image, show it to the model too: seeing the
-    # garment beats reading marketing copy about it.
-    image_bytes, media_type = (None, None)
-    if image_url:
-        image_bytes, media_type = _fetch_image(image_url)
+    # Choose the photo first, with a dedicated call, then describe only that one.
+    verdicts = _classify_photos(downloaded)
+    if downloaded:
+        preselected, preselected_has_person = _choose_photo(downloaded, verdicts)
+        log.info(
+            "Photo verdicts: %s -> chose photo %d (person visible: %s)",
+            {i + 1: v for i, v in (verdicts or {}).items()},
+            preselected + 1, preselected_has_person,
+        )
+        downloaded = [downloaded[preselected]]
+    else:
+        preselected_has_person = False
+
+    parts_note = ""
+    if downloaded:
+        parts_note = (
+            "\n\nThe product photo is attached.\n"
+            '\nONE MORE FIELD IS REQUIRED: "bounding_box", the box around THIS GARMENT '
+            "within the photo, as fractions of its width and height, 0,0 being the "
+            "top-left corner:\n"
+            '   {"x_min": <0-1>, "y_min": <0-1>, "x_max": <0-1>, "y_max": <0-1>}\n'
+            "Box the garment only - for trousers that means from the waistband to the "
+            "hems, excluding the torso, the arms, the shoes and any other clothing. If "
+            "the garment is alone against a plain background, box the whole garment with "
+            "a little room around it.\n"
+        )
 
     prompt = (
-        "Below is information about a clothing item from an online store"
-        + (", together with its product photo" if image_bytes else "")
-        + ". Extract the item's attributes.\n\n"
+        "Below is information about a clothing item from an online store. "
+        "Extract the item's attributes.\n\n"
         + CLOTHING_ATTRIBUTES_SCHEMA
-        + f"\n\nPRODUCT INFORMATION:\n{summary}"
+        + parts_note
+        + (f"\n\nPRODUCT INFORMATION:\n{summary}" if summary else "")
     )
 
-    raw = _complete(
-        prompt,
-        image_bytes=image_bytes,
-        media_type=media_type or "image/jpeg",
-        max_tokens=800,
+    parsed = _extract_json(
+        _complete_multi(prompt, [(b, m) for _u, b, m in downloaded], max_tokens=900)
     )
-    return _normalize_attributes(_extract_json(raw), source_link=url, image_url=image_url)
+
+    chosen_url, chosen_bytes, chosen_type = (
+        downloaded[0] if downloaded else (None, None, None)
+    )
+
+    log.info("  raw box from model: %r -> parsed: %r",
+             parsed.get("bounding_box"), _normalize_box(parsed.get("bounding_box")))
+
+    attributes = _normalize_attributes(parsed, source_link=url, image_url=chosen_url)
+    attributes["bounding_box"] = _normalize_box(parsed.get("bounding_box"))
+    # A flat packshot needs no cutting out; a worn shot does.
+    attributes["photo_has_person"] = preselected_has_person
+    return attributes, chosen_bytes, chosen_type
 
 
 # ---------------------------------------------------------------------------

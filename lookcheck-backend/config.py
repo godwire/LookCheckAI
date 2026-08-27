@@ -104,6 +104,50 @@ MAX_PAGE_CHARS = 6000
 # Max bytes read from a product image before handing it to the vision model
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 
+# --- Image pipeline --------------------------------------------------------
+
+# Every wardrobe tile is written at this size, square.
+IMAGE_SIZE = _int("IMAGE_SIZE", 800)
+
+# Padding around the garment, as a share of its own longest edge. Proportional
+# rather than fixed so a coat and a sock end up looking equally "shelved".
+IMAGE_PADDING_RATIO = float(_str("IMAGE_PADDING_RATIO", "0.08"))
+
+# Tile ground. White, the way a catalogue photographs a garment - and the way
+# most shop packshots already arrive, so linked items need no alteration.
+IMAGE_BACKGROUND = (255, 255, 255, 255)
+
+# Background removal is off by default: shop packshots are already clean, and
+# cutting out a garment worn by a person is the part this pipeline does least
+# reliably. Set REMOVE_BACKGROUND=1 to enable it for camera photos.
+REMOVE_BACKGROUND = _str("REMOVE_BACKGROUND", "0") not in ("0", "false", "no")
+
+# How many product photos to consider from a page before choosing the one
+# showing the garment on its own.
+MAX_PRODUCT_IMAGES = _int("MAX_PRODUCT_IMAGES", 6)
+
+# Produce a transparent cut-out alongside every tile. This is what makes an
+# outfit composable - garments can only be laid over one another convincingly
+# if each has been separated from its background. Independent of
+# REMOVE_BACKGROUND, which only governs the tile shown on a wardrobe card.
+MAKE_CUTOUTS = _str("MAKE_CUTOUTS", "1") not in ("0", "false", "no")
+
+# u2netp is the small variant: 4.5MB, ~2s on CPU. "u2net" is more accurate
+# and roughly 40x larger.
+SEGMENTATION_MODEL = _str("SEGMENTATION_MODEL", "u2netp")
+
+# Uploads below this on either side are rejected outright.
+MIN_SOURCE_PX = _int("MIN_SOURCE_PX", 200)
+
+# Reject when the extracted garment covers less than this share of the tile.
+MIN_SUBJECT_COVERAGE = float(_str("MIN_SUBJECT_COVERAGE", "0.04"))
+
+# Where processed tiles are written.
+MEDIA_ROOT = _str("MEDIA_ROOT", os.path.join(os.path.dirname(os.path.abspath(__file__)), "media"))
+
+# Max garments offered from a single photo.
+MAX_DETECTED_ITEMS = _int("MAX_DETECTED_ITEMS", 4)
+
 # --- CORS ------------------------------------------------------------------
 
 CORS_ORIGINS = [o.strip() for o in _str("CORS_ORIGINS", "*").split(",") if o.strip()]

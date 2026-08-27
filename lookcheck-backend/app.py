@@ -16,18 +16,20 @@ Open-Meteo (no key needed) and outfits are assembled by the deterministic
 rule-based engine.
 """
 
+import json
 import logging
+import os
 from datetime import date
 from functools import wraps
 
-from flask import Flask, g, jsonify, request
+from flask import Flask, g, jsonify, request, send_from_directory
 from flask_cors import CORS
 
 import auth
 import config
 import database
 import security
-from services import ai_service, weather_service
+from services import ai_service, image_service, link_service, weather_service
 
 config.validate()
 
@@ -42,6 +44,7 @@ app.config["MAX_CONTENT_LENGTH"] = config.MAX_UPLOAD_BYTES
 CORS(app, origins=config.CORS_ORIGINS)
 
 database.init_db()
+os.makedirs(config.MEDIA_ROOT, exist_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -49,6 +52,8 @@ database.init_db()
 # ---------------------------------------------------------------------------
 
 def error(message, status=400):
+    if status >= 400:
+        log.warning("%s on %s %s: %s", status, request.method, request.path, message)
     return jsonify({"error": message}), status
 
 
@@ -86,6 +91,17 @@ def coordinate(value, limit):
     if not -limit <= number <= limit:
         raise ValueError("Invalid coordinates.")
     return number
+
+
+@app.errorhandler(400)
+def bad_request(exc):
+    """Werkzeug raises a bare 400 for things that never reach our routes -
+    a malformed multipart upload, for example - and answers with an HTML
+    page. The client can only report the number from that, so convert it to
+    JSON and log it with the path."""
+    description = getattr(exc, "description", "") or "The request could not be read."
+    log.warning("400 on %s %s: %s", request.method, request.path, description)
+    return error(str(description), 400)
 
 
 @app.errorhandler(404)
@@ -240,6 +256,8 @@ def add_wardrobe_item():
         warmth_level=warmth,
         description=(str(data.get("description")).strip()[:300] if data.get("description") else None),
         image_url=data.get("image_url"),
+        cutout_url=data.get("cutout_url"),
+        cutout_joins=data.get("cutout_joins"),
         source_link=data.get("source_link"),
     )
     return jsonify(database.get_clothing_item(item_id, g.user_id)), 201
@@ -248,7 +266,8 @@ def add_wardrobe_item():
 @app.patch("/api/wardrobe/<int:item_id>")
 @auth.require_auth
 def update_wardrobe_item(item_id):
-    if not database.get_clothing_item(item_id, g.user_id):
+    existing = database.get_clothing_item(item_id, g.user_id)
+    if not existing:
         return error("Item not found.", 404)
 
     data = body()
@@ -270,14 +289,35 @@ def update_wardrobe_item(item_id):
         if key in data:
             fields[key] = str(data[key]).strip()[:300] or None
 
-    return jsonify(database.update_clothing_item(item_id, g.user_id, fields))
+    if "image_url" in data:
+        fields["image_url"] = data["image_url"] or None
+    if "cutout_url" in data:
+        fields["cutout_url"] = data["cutout_url"] or None
+    if "cutout_joins" in data:
+        fields["cutout_joins"] = data["cutout_joins"] or None
+
+    updated = database.update_clothing_item(item_id, g.user_id, fields)
+
+    # A replaced tile is no longer reachable from anywhere - remove the file
+    # rather than accumulating orphans on disk.
+    for key in ("image_url", "cutout_url"):
+        previous = existing.get(key)
+        if key in fields and previous and previous != fields[key]:
+            image_service.delete(previous)
+
+    return jsonify(updated)
 
 
 @app.delete("/api/wardrobe/<int:item_id>")
 @auth.require_auth
 def delete_wardrobe_item(item_id):
-    if not database.delete_clothing_item(item_id, g.user_id):
+    existing = database.get_clothing_item(item_id, g.user_id)
+    if not existing:
         return error("Item not found.", 404)
+
+    database.delete_clothing_item(item_id, g.user_id)
+    image_service.delete(existing.get("image_url"))
+    image_service.delete(existing.get("cutout_url"))
     return "", 204
 
 
@@ -291,12 +331,52 @@ def _require_ai_consent():
     return None
 
 
+@app.post("/api/wardrobe/photo")
+@auth.require_auth
+@rate_limited(60, 3600, "upload")
+def upload_item_photo():
+    """Stores a photo the user supplies themselves.
+
+    Deliberately separate from analyze-photo: nothing here is sent anywhere,
+    so it needs no AI consent and no API key. The image is still put through
+    the normalisation pipeline, so a hand-added piece sits on the same white
+    square as everything else.
+    """
+    if "photo" not in request.files:
+        return error("No 'photo' file uploaded.")
+
+    photo = request.files["photo"]
+    media_type = (photo.mimetype or "image/jpeg").split(";")[0]
+    if media_type not in ("image/jpeg", "image/png", "image/webp", "image/heic"):
+        return error("Please upload a JPEG, PNG or WebP image.")
+
+    image_bytes = photo.read()
+    if not image_bytes:
+        return error("The uploaded file is empty.")
+
+    try:
+        tile, cutout, meta = image_service.process(image_bytes)
+    except image_service.ImageProcessingError as exc:
+        return error(str(exc), 422)
+
+    return jsonify({
+        "image_url": image_service.save(g.user_id, tile),
+        "cutout_url": image_service.save(g.user_id, cutout, suffix="png") if cutout else None,
+        "cutout_joins": json.dumps(meta["joins"]) if meta.get("joins") else None,
+        "image_meta": meta,
+    })
+
+
 @app.post("/api/wardrobe/analyze-photo")
 @auth.require_auth
 @rate_limited(config.MAX_ANALYSIS_PER_HOUR, 3600, "analysis")
 def analyze_photo():
-    """Returns structured attributes without saving. The client reviews and
-    edits them, then POSTs to /api/wardrobe."""
+    """Finds the garments in an uploaded photo and returns one candidate per
+    garment, each with a processed catalogue tile.
+
+    Nothing is saved to the wardrobe here: the client shows the candidates,
+    the user picks and edits one, and only then POSTs to /api/wardrobe.
+    """
     blocked = _require_ai_consent()
     if blocked:
         return blocked
@@ -314,9 +394,41 @@ def analyze_photo():
         return error("The uploaded file is empty.")
 
     try:
-        return jsonify(ai_service.analyze_clothing_photo(image_bytes, media_type))
+        detected, meta = ai_service.detect_clothing_items(image_bytes, media_type)
     except ai_service.AIServiceError as exc:
-        return error(str(exc), 502)
+        return error(str(exc), 422)
+
+    candidates, failures = [], []
+    for item in detected:
+        try:
+            tile, cutout, tile_meta = image_service.process(
+                image_bytes, item.get("bounding_box")
+            )
+        except image_service.ImageProcessingError as exc:
+            failures.append(str(exc))
+            continue
+
+        candidate = {k: v for k, v in item.items() if k != "bounding_box"}
+        candidate["image_url"] = image_service.save(g.user_id, tile)
+        candidate["cutout_url"] = (
+            image_service.save(g.user_id, cutout, suffix="png") if cutout else None
+        )
+        candidate["cutout_joins"] = (
+            json.dumps(tile_meta["joins"]) if tile_meta.get("joins") else None
+        )
+        candidate["image_meta"] = tile_meta
+        candidates.append(candidate)
+
+    if not candidates:
+        return error(
+            failures[0] if failures else "This image could not be processed into a wardrobe tile.",
+            422,
+        )
+
+    return jsonify({
+        "image_kind": meta.get("image_kind"),
+        "candidates": candidates,
+    })
 
 
 @app.post("/api/wardrobe/parse-link")
@@ -327,16 +439,80 @@ def parse_link():
     if blocked:
         return blocked
 
-    url = body().get("url")
-    if not url:
+    raw = body().get("url")
+    if not raw:
         return error("'url' is required.")
 
+    # What arrives from a phone is often a sentence containing a shortened
+    # deep link with a campaign tail. Normalise before fetching anything.
     try:
-        return jsonify(ai_service.parse_product_link(url))
+        url, steps = link_service.prepare(raw)
+    except link_service.LinkError as exc:
+        return error(str(exc))
+    except security.UnsafeUrlError as exc:
+        return error(str(exc))
+
+    if steps:
+        log.info("Link normalised: %r -> %s %s", raw[:120], url, steps)
+
+    try:
+        attributes, image_bytes, _media_type = ai_service.parse_product_link(url)
     except security.UnsafeUrlError as exc:
         return error(str(exc))
     except ai_service.AIServiceError as exc:
         return error(str(exc), 502)
+
+    box = attributes.pop("bounding_box", None)
+    worn = attributes.pop("photo_has_person", False)
+
+    # A box covering almost the full height of a photo containing a person is
+    # a box around the person. No single garment fills a product shot top to
+    # bottom - and the frame is often narrow, so width proves nothing.
+    if worn and box and (box["y_max"] - box["y_min"]) > 0.8:
+        box = None
+
+    # Plenty of shops only ever photograph a garment on a model, so cropping is
+    # the difference between a wardrobe tile and a picture of a stranger. The
+    # detector does nothing but locate garments, so it is the better source of
+    # a box - but it costs a whole extra round trip to the model, which on a
+    # slow day is most of a minute. It is only worth paying when the box we
+    # already have is missing or was clearly drawn around the person.
+    if image_bytes and not box:
+        try:
+            detected, _meta = ai_service.detect_clothing_items(image_bytes)
+            same_category = [
+                item for item in detected
+                if item.get("category") == attributes.get("category") and item.get("bounding_box")
+            ]
+            chosen = same_category or [i for i in detected if i.get("bounding_box")]
+            if chosen:
+                box = chosen[0]["bounding_box"]
+                log.info(
+                    "Located the %s in the product photo: %r",
+                    attributes.get("category"), box,
+                )
+        except ai_service.AIServiceError as exc:
+            log.info("Could not locate the garment in the product photo: %s", exc)
+
+    # Run the store's photo through the same pipeline as a camera shot, so a
+    # linked item gets the same clean, uniformly framed tile - and so the
+    # wardrobe does not depend on someone else's CDN staying friendly.
+    if image_bytes:
+        try:
+            tile, cutout, tile_meta = image_service.process(image_bytes, box)
+            attributes["image_url"] = image_service.save(g.user_id, tile)
+            attributes["cutout_url"] = (
+                image_service.save(g.user_id, cutout, suffix="png") if cutout else None
+            )
+            attributes["cutout_joins"] = (
+                json.dumps(tile_meta["joins"]) if tile_meta.get("joins") else None
+            )
+            attributes["image_meta"] = tile_meta
+        except image_service.ImageProcessingError as exc:
+            # Keep the original URL: an imperfect picture beats a blank tile.
+            log.info("Product image could not be normalised (%s); keeping source URL", exc)
+
+    return jsonify(attributes)
 
 
 # ---------------------------------------------------------------------------
@@ -481,6 +657,29 @@ def outfit_feedback(outfit_id):
 
     database.set_outfit_feedback(outfit_id, g.user_id, rating)
     return jsonify({"outfit_id": outfit_id, "rating": rating})
+
+
+# ---------------------------------------------------------------------------
+# Media
+# ---------------------------------------------------------------------------
+
+@app.get("/media/<int:owner_id>/<path:filename>")
+def media(owner_id, filename):
+    """Serves processed wardrobe tiles.
+
+    These URLs are unguessable rather than authenticated: image components
+    cannot easily carry a bearer token, and a 20-character random filename is
+    a reasonable trade for a photo of a jumper. Object storage with signed
+    URLs is the right answer once this is deployed.
+    """
+    if "/" in filename or ".." in filename:
+        return error("Not found.", 404)
+
+    directory = os.path.join(config.MEDIA_ROOT, str(owner_id))
+    if not os.path.isdir(directory):
+        return error("Not found.", 404)
+
+    return send_from_directory(directory, filename, max_age=60 * 60 * 24 * 30)
 
 
 # ---------------------------------------------------------------------------

@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS clothes (
     warmth_level INTEGER NOT NULL,     -- 1 (very light) .. 5 (very warm)
     description  TEXT,
     image_url    TEXT,
+    cutout_url   TEXT,
+    cutout_joins TEXT,
     source_link  TEXT,
     archived     INTEGER NOT NULL DEFAULT 0,
     created_at   TEXT NOT NULL DEFAULT (datetime('now'))

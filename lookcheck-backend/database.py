@@ -94,8 +94,28 @@ def _now():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
+# Columns added after the first release. `CREATE TABLE IF NOT EXISTS` does
+# nothing to a table that already exists, so new columns have to be added
+# explicitly or an existing database would be missing them.
+MIGRATIONS = (
+    ("clothes", "cutout_url", "TEXT"),
+    ("clothes", "cutout_joins", "TEXT"),
+)
+
+
+def _existing_columns(cur, table):
+    if IS_SQLITE:
+        cur.execute(f"PRAGMA table_info({table})")
+        return {row[1] for row in cur.fetchall()}
+    cur.execute(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = %s",
+        (table,),
+    )
+    return {row["column_name"] for row in cur.fetchall()}
+
+
 def init_db():
-    """Create tables and seed default events if they don't exist yet."""
+    """Create tables, apply pending column additions, seed default events."""
     with open(SCHEMA_PATH, "r", encoding="utf-8") as f:
         script = f.read()
 
@@ -106,6 +126,13 @@ def init_db():
         else:
             with conn.cursor() as cur:
                 cur.execute(script)
+        conn.commit()
+
+        cur = conn.cursor()
+        for table, column, coltype in MIGRATIONS:
+            if column not in _existing_columns(cur, table):
+                cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+                print(f"[database] added {table}.{column}")
         conn.commit()
     finally:
         conn.close()
@@ -207,15 +234,17 @@ def delete_user(user_id):
 # ---------------------------------------------------------------------------
 
 def add_clothing_item(user_id, category, color, style, warmth_level,
-                      description=None, image_url=None, source_link=None):
+                      description=None, image_url=None, source_link=None,
+                      cutout_url=None, cutout_joins=None):
     with db_cursor() as cur:
         return _insert(
             cur,
             """INSERT INTO clothes
-               (user_id, category, color, style, warmth_level, description, image_url, source_link)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+               (user_id, category, color, style, warmth_level, description,
+                image_url, cutout_url, cutout_joins, source_link)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (user_id, category, color, style, warmth_level,
-             description, image_url, source_link),
+             description, image_url, cutout_url, cutout_joins, source_link),
         )
 
 
@@ -266,7 +295,8 @@ def get_clothing_items_by_ids(item_ids, user_id):
 
 def update_clothing_item(item_id, user_id, fields):
     allowed = ("category", "color", "style", "warmth_level",
-               "description", "image_url", "source_link")
+               "description", "image_url", "cutout_url", "cutout_joins",
+               "source_link")
     sets, params = [], []
     for key in allowed:
         if key in fields:
