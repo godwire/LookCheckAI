@@ -1177,6 +1177,7 @@ def generate_outfit(wardrobe_items, weather, style_preference, event=None,
         preference=style_preference,
         penalties=penalties,
         want_outerwear=needs_outerwear(weather),
+        weather=weather,
         limit=5,
     )
 

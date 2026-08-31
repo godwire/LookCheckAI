@@ -210,8 +210,8 @@ def flatten(image):
 
 
 def measure_joins(image):
-    """Width of the garment where it meets the next piece, as a fraction of
-    its own width.
+    """Where and how wide the garment is at the points where it meets the
+    next piece.
 
     A flat lay reads as an outfit when the pieces connect: the hem of a top
     sits at the waist of the trousers, and the trouser hems sit on the shoes.
@@ -219,26 +219,43 @@ def measure_joins(image):
     overall sizes, which is why scaling each piece on its own never made the
     column look like one body.
 
-    Measured from the alpha channel: for a band near the top and near the
-    bottom of the cut-out, how wide is the opaque part.
+    Each join carries a horizontal offset as well. Aligning pieces by the
+    centre of their bounding box lines up the wrong thing: a pair of trousers
+    photographed with the legs swung slightly to one side has its waist off
+    the box's centre, so the waist ends up sitting to one side of the hem
+    above it. The offset says how far the opaque run at that edge sits from
+    the middle, so the pieces can be aligned by the seam instead.
+
+    Measured from the alpha channel, as fractions of the garment's own width.
     """
     alpha = image.getchannel("A")
     width, height = alpha.size
     if width == 0 or height == 0:
-        return {"top": 1.0, "bottom": 1.0}
+        return {"top": 1.0, "bottom": 1.0, "top_offset": 0.0, "bottom_offset": 0.0}
 
-    def band_width(start, end):
-        widest = 0
+    def band(start, end):
+        left, right, widest = None, None, 0
         rows = range(max(0, int(height * start)), max(1, int(height * end)))
         for y in rows:
-            row = alpha.crop((0, y, width, y + 1))
-            box = row.getbbox()
-            if box:
-                widest = max(widest, box[2] - box[0])
-        return widest / float(width) if widest else 1.0
+            box = alpha.crop((0, y, width, y + 1)).getbbox()
+            if box and (box[2] - box[0]) > widest:
+                widest = box[2] - box[0]
+                left, right = box[0], box[2]
+        if not widest:
+            return 1.0, 0.0
+        centre = (left + right) / 2.0
+        return widest / float(width), (centre - width / 2.0) / float(width)
 
     # Just inside the edges: the very first row is often a stray pixel or two.
-    return {"top": band_width(0.04, 0.12), "bottom": band_width(0.88, 0.96)}
+    top_width, top_offset = band(0.04, 0.12)
+    bottom_width, bottom_offset = band(0.88, 0.96)
+
+    return {
+        "top": top_width,
+        "bottom": bottom_width,
+        "top_offset": top_offset,
+        "bottom_offset": bottom_offset,
+    }
 
 
 def make_cutout(image):

@@ -449,3 +449,103 @@ def set_outfit_feedback(outfit_id, user_id, rating):
             (outfit_id, user_id, rating, rating),
         )
     return True
+
+
+# ---------------------------------------------------------------------------
+# Saved outfits
+# ---------------------------------------------------------------------------
+
+def _hydrate_saved(row):
+    if row is None:
+        return None
+    row["item_ids"] = json.loads(row.pop("item_ids_json"))
+    return row
+
+
+def create_saved_outfit(user_id, name, item_ids, note=None, occasion=None):
+    with db_cursor() as cur:
+        return _insert(
+            cur,
+            """INSERT INTO saved_outfits (user_id, name, item_ids_json, note, occasion)
+               VALUES (?, ?, ?, ?, ?)""",
+            (user_id, name, json.dumps(list(item_ids)), note, occasion),
+        )
+
+
+def list_saved_outfits(user_id):
+    with db_cursor(commit=False) as cur:
+        cur.execute(
+            _q("""SELECT * FROM saved_outfits
+                  WHERE user_id = ?
+                  ORDER BY created_at DESC, id DESC"""),
+            (user_id,),
+        )
+        return [_hydrate_saved(row) for row in _all(cur)]
+
+
+def get_saved_outfit(outfit_id, user_id):
+    with db_cursor(commit=False) as cur:
+        cur.execute(
+            _q("SELECT * FROM saved_outfits WHERE id = ? AND user_id = ?"),
+            (outfit_id, user_id),
+        )
+        return _hydrate_saved(_one(cur))
+
+
+def update_saved_outfit(outfit_id, user_id, fields):
+    sets, params = [], []
+    if "name" in fields:
+        sets.append("name = ?")
+        params.append(fields["name"])
+    if "note" in fields:
+        sets.append("note = ?")
+        params.append(fields["note"])
+    if "occasion" in fields:
+        sets.append("occasion = ?")
+        params.append(fields["occasion"])
+    if "item_ids" in fields:
+        sets.append("item_ids_json = ?")
+        params.append(json.dumps(list(fields["item_ids"])))
+    if "last_worn" in fields:
+        sets.append("last_worn = ?")
+        params.append(fields["last_worn"])
+    if not sets:
+        return get_saved_outfit(outfit_id, user_id)
+
+    params.extend([outfit_id, user_id])
+    with db_cursor() as cur:
+        cur.execute(
+            _q(f"UPDATE saved_outfits SET {', '.join(sets)} WHERE id = ? AND user_id = ?"),
+            tuple(params),
+        )
+    return get_saved_outfit(outfit_id, user_id)
+
+
+def delete_saved_outfit(outfit_id, user_id):
+    with db_cursor() as cur:
+        cur.execute(
+            _q("DELETE FROM saved_outfits WHERE id = ? AND user_id = ?"),
+            (outfit_id, user_id),
+        )
+        return cur.rowcount > 0
+
+
+def prune_saved_outfits(user_id, removed_item_id):
+    """Drops a deleted garment from every saved look that used it.
+
+    A saved outfit is a list of ids, so removing a piece from the wardrobe
+    would otherwise leave looks quietly referring to something that no longer
+    exists. Looks left with fewer than two pieces are removed outright - they
+    are no longer an outfit.
+    """
+    removed = 0
+    for outfit in list_saved_outfits(user_id):
+        if removed_item_id not in outfit["item_ids"]:
+            continue
+        remaining = [i for i in outfit["item_ids"] if i != removed_item_id]
+        if len(remaining) < 2:
+            delete_saved_outfit(outfit["id"], user_id)
+            removed += 1
+        else:
+            update_saved_outfit(outfit["id"], user_id, {"item_ids": remaining})
+    return removed

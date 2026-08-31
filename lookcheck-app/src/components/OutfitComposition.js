@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Text, Image, StyleSheet } from 'react-native';
+import { View, Text, Image, StyleSheet } from 'react-native';
 import Animated, { FadeIn } from 'react-native-reanimated';
 
 import { resolveImageUrl } from '../api/client';
@@ -14,19 +14,13 @@ import { colors, space, radius, type } from '../theme';
  * quietly inventing garments that are not in their wardrobe, which is the one
  * thing this app must not do.
  *
- * Two ideas make it read as an outfit rather than as a pile of clothes.
- *
- * First, everything is measured in centimetres. Each category has a nominal
- * garment size, the photograph is fitted into that box keeping its own
- * proportions, and a single scale factor converts the whole column to screen
- * space at the end. Sizing each piece to its own slice of the canvas instead
- * would put a jacket and a pair of trousers at unrelated scales, and no
- * arrangement of pieces at unrelated scales looks like an outfit.
- *
- * Second, the column is chained: each garment is placed just above where the
- * previous one ends, so a hem tucks behind a waistband and trouser legs
- * disappear into shoes - at whatever proportions the photographs happen to
- * have.
+ * Sizing works by where garments join. The trick flat-lay photographers use
+ * is to lay pieces "in their natural wear relationship": the hem of the top
+ * at the waist of the trousers, the trouser hems on the shoes. What makes
+ * that read as one body is not the absolute size of each piece - it is that
+ * the pieces meet. So the backend measures how wide each cut-out is at its
+ * top and bottom edge, only the top is given a size here, and everything
+ * below is scaled so its opening matches the hem above it.
  *
  * Pieces without a cut-out are skipped: one rectangle of someone's bedroom
  * wall behind a jumper ruins the whole illusion.
@@ -35,39 +29,62 @@ import { colors, space, radius, type } from '../theme';
 const CANVAS_RATIO = 0.78; // canvas width / canvas height
 
 /**
- * Sizing by where garments join.
- *
- * The trick flat-lay photographers use is to lay pieces "in their natural
- * wear relationship": the hem of the top at the waist of the trousers, the
- * trouser hems on the shoes. What makes that read as one body is not the
- * absolute size of each piece - it is that the pieces meet.
- *
- * So the backend measures, for every cut-out, how wide the garment is at its
- * top edge and at its bottom edge. Only the top is given a size here;
- * everything below is scaled so its opening matches the hem above it. A pair
- * of baggy trousers is then automatically wider than a pair of skinny ones,
- * because its waist is a smaller share of its own width - no garment types,
- * no thresholds, no table of centimetres to keep tuning.
+ * The layout readout under the picture. Useful while tuning the composition,
+ * and the first thing to turn off before recording anything anyone else will
+ * see - a demo with a debug panel in it reads as unfinished.
  */
+const SHOW_LAYOUT_DEBUG = false;
 
 // The one free parameter: how much of the canvas the top spans.
 const TOP_WIDTH = 0.42;
 
-// Categories that have a place in the layout. Anything else in the outfit is
-// listed below the picture but not drawn into it.
-const COMPOSABLE = ['top', 'bottom', 'outerwear', 'footwear'];
+// Categories that have a place in the layout.
+const COMPOSABLE = ['top', 'bottom', 'outerwear', 'footwear', 'accessory'];
 
-// A pair of shoes sits roughly as wide as the two trouser hems together.
-const SHOE_TO_HEM = 1.05;
+/**
+ * A pair of shoes is about as wide as a person's shoulders are across, give
+ * or take - and crucially it does not change with the trousers above it.
+ * Sizing shoes from the trouser hems made them grow with every wide-leg pair,
+ * which is why they came out oversized.
+ */
+const SHOE_TO_TOP = 0.75;
 
 // An outer layer is cut a little fuller than what goes under it.
 const OUTERWEAR_TO_TOP = 1.18;
 
-// Used when a garment's joins could not be measured.
-const DEFAULT_JOINS = { top: 1, bottom: 1 };
+// How far a base layer spreads relative to the piece over it, and how far
+// down it starts - enough for a collar above and a hem below to show.
+const BASE_LAYER_SPREAD = 1.1;
+const BASE_LAYER_DROP = 0.1;
+
+/**
+ * A garment worn next to the skin, as opposed to one worn over it. Nothing
+ * in the data says "t-shirt" or "sweatshirt", but warmth already does: a
+ * base layer is light, a mid layer is not. Using what is there beats asking
+ * for a wardrobe to be re-tagged.
+ */
+const BASE_LAYER_MAX_WARMTH = 2;
+
+/**
+ * Used when a garment's joins were never measured - anything added before
+ * the measurement existed, or a photograph the cut-out failed on.
+ *
+ * These are not 1:1. Falling back to "the whole width" would make a waist as
+ * wide as the hem above it and a pair of shoes as wide as the trouser legs,
+ * so every piece would come out the same width - which looks far more broken
+ * than a rough guess.
+ */
+const DEFAULT_JOINS = {
+  top: { top: 0.95, bottom: 0.72, top_offset: 0, bottom_offset: 0 },
+  outerwear: { top: 0.92, bottom: 0.80, top_offset: 0, bottom_offset: 0 },
+  bottom: { top: 0.86, bottom: 0.84, top_offset: 0, bottom_offset: 0 },
+  footwear: { top: 1, bottom: 1, top_offset: 0, bottom_offset: 0 },
+  accessory: { top: 1, bottom: 1, top_offset: 0, bottom_offset: 0 },
+};
 
 function joinsOf(item) {
-  if (!item || !item.cutout_joins) return DEFAULT_JOINS;
+  const fallback = (item && DEFAULT_JOINS[item.category]) || { top: 1, bottom: 1 };
+  if (!item || !item.cutout_joins) return fallback;
   try {
     const parsed =
       typeof item.cutout_joins === 'string'
@@ -75,31 +92,123 @@ function joinsOf(item) {
         : item.cutout_joins;
     const top = Number(parsed.top);
     const bottom = Number(parsed.bottom);
+    const offset = (value) => (Number.isFinite(value) ? Math.max(-0.3, Math.min(0.3, value)) : 0);
     return {
-      top: top > 0.05 && top <= 1 ? top : 1,
-      bottom: bottom > 0.05 && bottom <= 1 ? bottom : 1,
+      top: top > 0.05 && top <= 1 ? top : fallback.top,
+      bottom: bottom > 0.05 && bottom <= 1 ? bottom : fallback.bottom,
+      top_offset: offset(Number(parsed.top_offset)),
+      bottom_offset: offset(Number(parsed.bottom_offset)),
     };
   } catch (e) {
-    return DEFAULT_JOINS;
+    return fallback;
   }
 }
 
-// How far each garment rides up under the one above it, as a share of that
-// piece's height.
-const OVERLAP_SHARE = 0.07;
+// Space left between pieces, as a share of the canvas height.
+const GAP = 0.035;
 
 // Share of the canvas height the whole figure may occupy.
 const FILL = 0.94;
 
 const COLUMN = ['top', 'bottom', 'footwear'];
 
+/**
+ * How wide a top's hem is, as a share of the garment's total width.
+ *
+ * The measurement alone cannot be trusted here. A horizontal slice near the
+ * bottom of a jacket crosses sleeve, body and sleeve, so it reports the full
+ * width - which would make the trousers below it wider than the jacket above.
+ * A vest with no sleeves reports something far narrower. So the measured
+ * value is kept, but held inside the range a real hem can occupy.
+ *
+ * The trousers' own waist measurement is not clamped: the top edge of a pair
+ * of trousers is genuinely the waist, with nothing else in the way, and it is
+ * what tells a baggy pair from a skinny one.
+ */
+const HEM_SHARE_RANGE = [0.45, 0.69];
+
+function hemShareOf(item) {
+  const [low, high] = HEM_SHARE_RANGE;
+  return Math.max(low, Math.min(high, joinsOf(item).bottom));
+}
+
+/**
+ * Where an accessory belongs on a body.
+ *
+ * Nothing records what kind of accessory a piece is, but its description
+ * usually says so plainly, so the words are matched against the places an
+ * accessory can sit. `width` is a share of the top's width.
+ */
+const ACCESSORY_ANCHORS = [
+  { at: 'head', width: 0.62, words: ['hat', 'cap', 'beanie', 'headband', 'sunglasses', 'glasses'] },
+  { at: 'neck', width: 0.34, words: ['necklace', 'chain', 'pendant', 'choker', 'scarf', 'tie', 'bandana'] },
+  { at: 'wrist', width: 0.20, words: ['watch', 'bracelet', 'cuff', 'bangle'] },
+  { at: 'hand', width: 0.10, words: ['ring', 'signet'] },
+  { at: 'waist', width: 0.72, words: ['belt', 'buckle'] },
+  { at: 'side', width: 0.42, words: ['bag', 'purse', 'tote', 'backpack', 'satchel', 'pouch'] },
+];
+
+const DEFAULT_ANCHOR = { at: 'neck', width: 0.30 };
+
+function anchorFor(item) {
+  const text = `${item.description || ''} ${item.color || ''}`.toLowerCase();
+  return (
+    ACCESSORY_ANCHORS.find((anchor) => anchor.words.some((word) => text.includes(word))) ||
+    DEFAULT_ANCHOR
+  );
+}
+
+/**
+ * Turns an anchor into a position, using the pieces already laid out. An
+ * accessory has no seam of its own to align to - it hangs off the body, and
+ * the body here is the column of clothes.
+ */
+function placeAccessory(anchor, width, height, torso, waistSeam) {
+  const centred = 0.5 - width / 2;
+
+  switch (anchor.at) {
+    case 'head':
+      return { left: centred, top: torso.top - height * 1.05 };
+    case 'neck':
+      // Over the collar, on whatever the outermost top layer is.
+      return { left: centred, top: torso.top + torso.height * 0.03 };
+    case 'wrist':
+      // At the end of a sleeve, to the side of the torso.
+      return { left: torso.left - width * 0.4, top: torso.top + torso.height * 0.62 };
+    case 'hand':
+      return { left: torso.left - width * 1.2, top: torso.top + torso.height * 0.84 };
+    case 'waist':
+      return { left: centred, top: waistSeam - height / 2 };
+    case 'side':
+      return {
+        left: Math.min(0.98 - width, torso.left + torso.width * 0.9),
+        top: torso.top + torso.height * 0.5,
+      };
+    default:
+      return { left: centred, top: torso.top + torso.height * 0.03 };
+  }
+}
+
 function computeLayout(items, aspects) {
   const byCategory = {};
+  const tops = [];
+  const accessories = [];
+
   items.forEach((item) => {
-    if (aspects[item.id]) byCategory[item.category] = item;
+    if (!aspects[item.id]) return;
+    if (item.category === 'top') tops.push(item);
+    else if (item.category === 'accessory') accessories.push(item);
+    else byCategory[item.category] = item;
   });
 
-  const top = byCategory.top;
+  // Lightest first: that is the order the clothes go on, and the order they
+  // have to be drawn in for the outer one to sit over the inner.
+  tops.sort((a, b) => (a.warmth_level || 3) - (b.warmth_level || 3));
+  const baseLayer =
+    tops.length > 1 && (tops[0].warmth_level || 3) <= BASE_LAYER_MAX_WARMTH ? tops[0] : null;
+  const top = baseLayer ? tops[tops.length - 1] : tops[0];
+  if (top) byCategory.top = top;
+
   const bottom = byCategory.bottom;
   const shoes = byCategory.footwear;
   if (!top && !bottom) return [];
@@ -109,15 +218,12 @@ function computeLayout(items, aspects) {
   if (top) widths.top = TOP_WIDTH;
 
   if (bottom) {
-    const hemAbove = top ? widths.top * joinsOf(top).bottom : TOP_WIDTH * 0.7;
+    const hemAbove = top ? widths.top * hemShareOf(top) : TOP_WIDTH * 0.7;
     widths.bottom = hemAbove / joinsOf(bottom).top;
   }
 
   if (shoes) {
-    const hemAbove = bottom
-      ? widths.bottom * joinsOf(bottom).bottom
-      : TOP_WIDTH * 0.6;
-    widths.footwear = hemAbove * SHOE_TO_HEM;
+    widths.footwear = TOP_WIDTH * SHOE_TO_TOP;
   }
 
   // Height follows from each garment's own proportions.
@@ -132,55 +238,98 @@ function computeLayout(items, aspects) {
   const stacked = COLUMN.filter((category) => heights[category]);
   if (stacked.length === 0) return [];
 
-  // Overlap is a share of the piece above, so it scales with the outfit.
-  const overlapOf = (category) => {
-    const above = COLUMN[COLUMN.indexOf(category) - 1];
-    return above && heights[above] ? heights[above] * OVERLAP_SHARE : 0;
-  };
-
   const rawTotal =
-    stacked.reduce((sum, category) => sum + heights[category], 0) -
-    stacked.reduce((sum, category) => sum + overlapOf(category), 0);
+    stacked.reduce((sum, category) => sum + heights[category], 0) +
+    GAP * (stacked.length - 1);
 
   const scale = rawTotal > FILL ? FILL / rawTotal : 1;
   const placed = [];
   let y = (1 - rawTotal * scale) / 2;
 
-  const centre = byCategory.outerwear ? 0.58 : 0.5;
-
   stacked.forEach((category, index) => {
     const width = widths[category] * scale;
     const height = heights[category] * scale;
-    if (index > 0) y -= overlapOf(category) * scale;
+    if (index > 0) y += GAP * scale;
+
+    // Aligned by the seam rather than by the bounding box: a garment is
+    // centred on the edge that joins it to its neighbour, so a pair of
+    // trousers whose legs hang to one side still has its waist on the axis.
+    const joins = joinsOf(byCategory[category]);
+    const seam = index === 0 ? joins.bottom_offset : joins.top_offset;
+
     placed.push({
       item: byCategory[category],
-      left: centre - width / 2,
+      left: 0.5 - width / 2 - seam * width,
       top: y,
       width,
       height,
       rotate: '0deg',
-      z: index + 2,
+      z: (index + 2) * 10,
     });
     y += height;
   });
 
-  // The outer layer hangs open behind the shoulder, the way a jacket falls.
-  const coat = byCategory.outerwear;
   const torso = placed.find((entry) => entry.item.category === 'top') || placed[0];
+
+  // The outer layer sits behind the top, on the same axis: an offset jacket
+  // would pull the whole figure off centre, which is the one thing a
+  // symmetrical layout cannot afford.
+  const coat = byCategory.outerwear;
   if (coat && torso && aspects[coat.id]) {
     const width = torso.width * OUTERWEAR_TO_TOP;
     const height = (width * CANVAS_RATIO) / aspects[coat.id];
-    placed.unshift({
+    placed.push({
       item: coat,
-      left: Math.max(0.01, torso.left - width * 0.46),
-      top: torso.top - height * 0.04,
+      left: 0.5 - width / 2,
+      top: torso.top - (height - torso.height) / 2,
       width,
       height,
-      rotate: '-8deg',
-      z: 1,
+      rotate: '0deg',
+      z: 5,
     });
   }
 
+  // A base layer sits under the piece over it, spread a little wider and
+  // dropped a little lower, so a collar shows above and a hem below. Without
+  // that the two tops would simply hide one another.
+  if (baseLayer && torso && aspects[baseLayer.id]) {
+    const width = torso.width * BASE_LAYER_SPREAD;
+    const height = (width * CANVAS_RATIO) / aspects[baseLayer.id];
+    placed.push({
+      item: baseLayer,
+      left: 0.5 - width / 2,
+      top: torso.top + torso.height * BASE_LAYER_DROP,
+      width,
+      height,
+      rotate: '0deg',
+      z: torso.z - 1,
+    });
+  }
+
+  // Accessories go on last, where they would sit on a person.
+  const bottomEntry = placed.find((entry) => entry.item.category === 'bottom');
+  const waistSeam = bottomEntry ? bottomEntry.top : (torso ? torso.top + torso.height : 0.5);
+
+  if (torso) {
+    accessories.forEach((item) => {
+      const anchor = anchorFor(item);
+      const width = torso.width * anchor.width;
+      const height = (width * CANVAS_RATIO) / aspects[item.id];
+      const spot = placeAccessory(anchor, width, height, torso, waistSeam);
+      placed.push({
+        item,
+        left: spot.left,
+        top: spot.top,
+        width,
+        height,
+        rotate: '0deg',
+        z: 90,
+      });
+    });
+  }
+
+  // Drawn back to front.
+  placed.sort((a, b) => a.z - b.z);
   return placed;
 }
 
@@ -218,25 +367,43 @@ export default function OutfitComposition({ items, style }) {
   if (wearable.length < 3 || placed.length < 3) return null;
 
   return (
-    <Animated.View style={[styles.canvas, style]} entering={FadeIn.duration(280)}>
-      {placed.map((entry) => (
-        <Image
-          key={entry.item.id}
-          source={{ uri: resolveImageUrl(entry.item.cutout_url) }}
-          resizeMode="contain"
-          style={{
-            position: 'absolute',
-            left: `${entry.left * 100}%`,
-            top: `${entry.top * 100}%`,
-            width: `${entry.width * 100}%`,
-            height: `${entry.height * 100}%`,
-            transform: [{ rotate: entry.rotate }],
-            zIndex: entry.z,
-          }}
-        />
-      ))}
-      <Text style={styles.caption}>The look, laid out</Text>
-    </Animated.View>
+    <>
+      <Animated.View style={[styles.canvas, style]} entering={FadeIn.duration(280)}>
+        {placed.map((entry) => (
+          <Image
+            key={entry.item.id}
+            source={{ uri: resolveImageUrl(entry.item.cutout_url) }}
+            resizeMode="contain"
+            style={{
+              position: 'absolute',
+              left: `${entry.left * 100}%`,
+              top: `${entry.top * 100}%`,
+              width: `${entry.width * 100}%`,
+              height: `${entry.height * 100}%`,
+              transform: [{ rotate: entry.rotate }],
+              zIndex: entry.z,
+            }}
+          />
+        ))}
+        <Text style={styles.caption}>The look, laid out</Text>
+      </Animated.View>
+
+      {/* Development only: every number the layout worked from, so a bad
+          result can be read off the screen instead of guessed at. */}
+      {__DEV__ && SHOW_LAYOUT_DEBUG && (
+        <View style={styles.debug}>
+          <Text style={styles.debugTitle}>layout · dev only</Text>
+          {placed.map((entry) => (
+            <Text key={entry.item.id} style={styles.debugRow}>
+              {entry.item.category}
+              {entry.item.category === 'accessory' ? ` @${anchorFor(entry.item).at}` : ''}
+              {'  w '}{entry.width.toFixed(2)} h {entry.height.toFixed(2)}
+              {'  y '}{entry.top.toFixed(2)} z {entry.z}
+            </Text>
+          ))}
+        </View>
+      )}
+    </>
   );
 }
 
@@ -254,6 +421,17 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     marginBottom: space.xl,
   },
+  debug: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.line,
+    padding: space.md,
+    marginTop: -space.md,
+    marginBottom: space.xl,
+  },
+  debugTitle: { ...type.label, fontSize: 9, marginBottom: space.xs },
+  debugRow: { color: colors.textMuted, fontSize: 10, lineHeight: 15 },
   caption: {
     ...type.label,
     color: colors.textFaint,

@@ -54,6 +54,19 @@ CREATE TABLE IF NOT EXISTS daily_outfits (
 CREATE INDEX IF NOT EXISTS idx_outfits_user_date
     ON daily_outfits(user_id, outfit_date);
 
+CREATE TABLE IF NOT EXISTS saved_outfits (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name          TEXT NOT NULL,
+    item_ids_json TEXT NOT NULL,       -- JSON array of clothes.id
+    note          TEXT,
+    occasion      TEXT,                -- optional events.name
+    last_worn     TEXT,                -- YYYY-MM-DD
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_saved_outfits_user ON saved_outfits(user_id);
+
 CREATE TABLE IF NOT EXISTS outfit_feedback (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     outfit_id  INTEGER NOT NULL UNIQUE REFERENCES daily_outfits(id) ON DELETE CASCADE,

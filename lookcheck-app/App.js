@@ -14,6 +14,8 @@ import EventLookScreen from './src/screens/EventLookScreen';
 import WardrobeScreen from './src/screens/WardrobeScreen';
 import AddItemScreen from './src/screens/AddItemScreen';
 import EditItemScreen from './src/screens/EditItemScreen';
+import LooksScreen from './src/screens/LooksScreen';
+import LookBuilderScreen from './src/screens/LookBuilderScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 
 const Tab = createBottomTabNavigator();
@@ -45,6 +47,8 @@ function WardrobeStackScreen() {
       <WardrobeStack.Screen name="WardrobeList" component={WardrobeScreen} />
       <WardrobeStack.Screen name="AddItem" component={AddItemScreen} />
       <WardrobeStack.Screen name="EditItem" component={EditItemScreen} />
+      <WardrobeStack.Screen name="Looks" component={LooksScreen} />
+      <WardrobeStack.Screen name="LookBuilder" component={LookBuilderScreen} />
     </WardrobeStack.Navigator>
   );
 }

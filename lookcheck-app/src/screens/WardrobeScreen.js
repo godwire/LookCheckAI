@@ -89,9 +89,14 @@ export default function WardrobeScreen({ navigation }) {
           </Text>
           <Text style={styles.display}>Wardrobe</Text>
         </View>
-        <TouchableOpacity style={styles.add} onPress={() => navigation.navigate('AddItem')}>
-          <Text style={styles.addText}>Add</Text>
-        </TouchableOpacity>
+        <View style={styles.headerActions}>
+          <TouchableOpacity style={styles.ghost} onPress={() => navigation.navigate('Looks')}>
+            <Text style={styles.ghostText}>Looks</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.add} onPress={() => navigation.navigate('AddItem')}>
+            <Text style={styles.addText}>Add</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/*
@@ -178,6 +183,9 @@ const styles = StyleSheet.create({
     marginBottom: space.xs,
   },
   addText: { color: colors.text, fontWeight: '700', fontSize: 14 },
+  headerActions: { flexDirection: 'row', alignItems: 'center', marginBottom: space.xs },
+  ghost: { paddingVertical: space.sm, paddingHorizontal: space.md, marginRight: space.xs },
+  ghostText: { color: colors.textMuted, fontWeight: '600', fontSize: 14 },
 
   filterRow: {
     height: FILTER_ROW_HEIGHT,

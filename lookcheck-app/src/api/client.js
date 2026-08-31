@@ -158,6 +158,16 @@ export const api = {
       body: JSON.stringify({ rating }),
     }),
 
+  // --- Saved looks ---
+  getLooks: () => request('/api/looks'),
+  getLook: (lookId) => request(`/api/looks/${lookId}`),
+  createLook: (look) => request('/api/looks', { method: 'POST', body: JSON.stringify(look) }),
+  updateLook: (lookId, fields) =>
+    request(`/api/looks/${lookId}`, { method: 'PATCH', body: JSON.stringify(fields) }),
+  deleteLook: (lookId) => request(`/api/looks/${lookId}`, { method: 'DELETE' }),
+  /** Makes a saved look today's outfit, exactly as a generated one would be. */
+  wearLook: (lookId) => request(`/api/looks/${lookId}/wear`, { method: 'POST' }),
+
   // --- Diagnostics ---
   health: () => request('/api/health'),
 };

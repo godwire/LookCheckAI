@@ -316,6 +316,7 @@ def delete_wardrobe_item(item_id):
         return error("Item not found.", 404)
 
     database.delete_clothing_item(item_id, g.user_id)
+    database.prune_saved_outfits(g.user_id, item_id)
     image_service.delete(existing.get("image_url"))
     image_service.delete(existing.get("cutout_url"))
     return "", 204
@@ -657,6 +658,182 @@ def outfit_feedback(outfit_id):
 
     database.set_outfit_feedback(outfit_id, g.user_id, rating)
     return jsonify({"outfit_id": outfit_id, "rating": rating})
+
+
+# ---------------------------------------------------------------------------
+# Saved outfits
+# ---------------------------------------------------------------------------
+
+MIN_LOOK_ITEMS = 2
+MAX_LOOK_ITEMS = 8
+
+
+def _serialize_look(look):
+    """A saved look is stored as a list of ids; the client needs the garments.
+
+    Items are fetched scoped to the owner, so a look can never surface someone
+    else's clothes even if its stored ids were tampered with.
+    """
+    items = database.get_clothing_items_by_ids(look["item_ids"], look["user_id"])
+    return {
+        "id": look["id"],
+        "name": look["name"],
+        "note": look.get("note"),
+        "occasion": look.get("occasion"),
+        "last_worn": look.get("last_worn"),
+        "created_at": look.get("created_at"),
+        "items": items,
+    }
+
+
+def _validate_look_items(raw_ids):
+    """Returns (item_ids, error_response). Ids are checked against the user's
+    own wardrobe, in the order given - the order is the order they are worn."""
+    if not isinstance(raw_ids, list):
+        return None, error("'item_ids' must be a list of wardrobe item ids.")
+
+    seen, ids = set(), []
+    for raw in raw_ids:
+        try:
+            item_id = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if item_id not in seen:
+            seen.add(item_id)
+            ids.append(item_id)
+
+    if len(ids) < MIN_LOOK_ITEMS:
+        return None, error(f"A look needs at least {MIN_LOOK_ITEMS} pieces.")
+    if len(ids) > MAX_LOOK_ITEMS:
+        return None, error(f"A look can hold at most {MAX_LOOK_ITEMS} pieces.")
+
+    owned = {item["id"] for item in database.get_clothing_items_by_ids(ids, g.user_id)}
+    missing = [item_id for item_id in ids if item_id not in owned]
+    if missing:
+        return None, error("Some of those pieces are not in your wardrobe.", 422)
+
+    return ids, None
+
+
+@app.get("/api/looks")
+@auth.require_auth
+def list_looks():
+    return jsonify([_serialize_look(look) for look in database.list_saved_outfits(g.user_id)])
+
+
+@app.post("/api/looks")
+@auth.require_auth
+def create_look():
+    data = body()
+
+    name = str(data.get("name") or "").strip()
+    if not name:
+        return error("Give the look a name.")
+    if len(name) > 60:
+        return error("That name is too long.")
+
+    item_ids, failure = _validate_look_items(data.get("item_ids"))
+    if failure:
+        return failure
+
+    occasion = data.get("occasion")
+    if occasion and not database.get_event_by_name(occasion):
+        return error(f"Unknown occasion '{occasion}'. See /api/events.")
+
+    look_id = database.create_saved_outfit(
+        user_id=g.user_id,
+        name=name,
+        item_ids=item_ids,
+        note=(str(data.get("note")).strip()[:300] if data.get("note") else None),
+        occasion=occasion or None,
+    )
+    return jsonify(_serialize_look(database.get_saved_outfit(look_id, g.user_id))), 201
+
+
+@app.get("/api/looks/<int:look_id>")
+@auth.require_auth
+def get_look(look_id):
+    look = database.get_saved_outfit(look_id, g.user_id)
+    if not look:
+        return error("Look not found.", 404)
+    return jsonify(_serialize_look(look))
+
+
+@app.patch("/api/looks/<int:look_id>")
+@auth.require_auth
+def update_look(look_id):
+    if not database.get_saved_outfit(look_id, g.user_id):
+        return error("Look not found.", 404)
+
+    data = body()
+    fields = {}
+
+    if "name" in data:
+        name = str(data["name"]).strip()
+        if not name or len(name) > 60:
+            return error("Please give the look a name of up to 60 characters.")
+        fields["name"] = name
+
+    if "note" in data:
+        fields["note"] = str(data["note"]).strip()[:300] or None
+
+    if "occasion" in data:
+        occasion = data["occasion"]
+        if occasion and not database.get_event_by_name(occasion):
+            return error(f"Unknown occasion '{occasion}'. See /api/events.")
+        fields["occasion"] = occasion or None
+
+    if "item_ids" in data:
+        item_ids, failure = _validate_look_items(data["item_ids"])
+        if failure:
+            return failure
+        fields["item_ids"] = item_ids
+
+    return jsonify(_serialize_look(database.update_saved_outfit(look_id, g.user_id, fields)))
+
+
+@app.delete("/api/looks/<int:look_id>")
+@auth.require_auth
+def delete_look(look_id):
+    if not database.delete_saved_outfit(look_id, g.user_id):
+        return error("Look not found.", 404)
+    return "", 204
+
+
+@app.post("/api/looks/<int:look_id>/wear")
+@auth.require_auth
+def wear_look(look_id):
+    """Makes a saved look today's outfit.
+
+    This writes the same kind of record the recommender does, so the look
+    appears on the Today screen, counts as worn, and feeds the same history
+    and feedback the generated ones do.
+    """
+    look = database.get_saved_outfit(look_id, g.user_id)
+    if not look:
+        return error("Look not found.", 404)
+
+    items = database.get_clothing_items_by_ids(look["item_ids"], g.user_id)
+    if not items:
+        return error("None of the pieces in this look are in your wardrobe any more.", 422)
+
+    weather = weather_service.get_weather_or_mock(g.user.get("lat"), g.user.get("lon"))
+
+    outfit_id = database.save_outfit(
+        user_id=g.user_id,
+        item_ids=[item["id"] for item in items],
+        weather_summary=f"{weather['temp_c']}°C, {weather['description']}",
+        reasoning=f"Your saved look, {look['name']}.",
+        styling_tip=look.get("note"),
+        generated_by="saved",
+    )
+    database.update_saved_outfit(
+        look_id, g.user_id, {"last_worn": date.today().isoformat()}
+    )
+
+    payload = _serialize_outfit(database.get_outfit(outfit_id, g.user_id))
+    payload["weather"] = weather
+    return jsonify(payload)
 
 
 # ---------------------------------------------------------------------------

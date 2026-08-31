@@ -173,9 +173,14 @@ def _style_note(styles, coherence):
 
 def warmth_score(items, warmth_range):
     """Penalises pieces that sit outside today's sensible warmth band, so a
-    heavy knit does not get picked just because it coordinates nicely."""
+    heavy knit does not get picked just because it coordinates nicely.
+
+    Accessories are exempt: a ring is not warm or cold, and judging one on a
+    warmth scale only adds noise to the score.
+    """
+    items = [item for item in items if item.get("category") != "accessory"]
     if not items:
-        return 0.0
+        return 1.0
     low, high = warmth_range
     total = 0.0
     for item in items:
@@ -216,14 +221,78 @@ def score_outfit(items, warmth_range, preference=None, penalties=None):
     return total, {"color": color_note, "style": style_note}
 
 
+# A garment worn next to the skin against one worn over it. Nothing in the
+# data says "t-shirt" or "sweatshirt", but warmth already does: a base layer
+# is light, a mid layer is not. Using what is there beats asking the user to
+# re-tag a wardrobe.
+BASE_LAYER_MAX_WARMTH = 2
+MID_LAYER_MIN_WARMTH = 3
+
+# Layering only makes sense when the day is cool enough to want two layers.
+LAYERING_MAX_FEELS_LIKE = 19
+
+
+def wants_layering(weather):
+    feels = weather.get("feels_like_c", weather.get("temp_c", 15))
+    return feels <= LAYERING_MAX_FEELS_LIKE
+
+
+def pick_base_layer(tops, worn_top, penalties=None):
+    """The lighter top to wear underneath a heavier one.
+
+    Returns None when the chosen top is itself light, or when nothing lighter
+    is available - a t-shirt under a t-shirt is not an outfit.
+    """
+    if (worn_top.get("warmth_level") or 3) < MID_LAYER_MIN_WARMTH:
+        return None
+
+    penalties = penalties or {}
+    candidates = [
+        item for item in tops
+        if item["id"] != worn_top["id"]
+        and (item.get("warmth_level") or 3) <= BASE_LAYER_MAX_WARMTH
+    ]
+    if not candidates:
+        return None
+
+    # A base layer is mostly hidden, so it is chosen for being unobtrusive:
+    # neutral first, then whatever has been worn least.
+    candidates.sort(
+        key=lambda item: (
+            0 if is_neutral(item.get("color")) else 1,
+            penalties.get(item["id"], 0),
+        )
+    )
+    return candidates[0]
+
+
+def pick_accessory(accessories, outfit_items, penalties=None):
+    """One accessory, chosen so it does not fight the outfit's colours."""
+    if not accessories:
+        return None
+
+    penalties = penalties or {}
+    scored = []
+    for item in accessories:
+        score, _notes = score_outfit(
+            outfit_items + [item], (1, 5), preference=None, penalties=penalties
+        )
+        scored.append((score, penalties.get(item["id"], 0), item))
+
+    scored.sort(key=lambda entry: (-entry[0], entry[1]))
+    return scored[0][2]
+
+
 def build_outfits(candidates, warmth_range, preference=None, penalties=None,
-                  want_outerwear=False, limit=5, per_category=6):
+                  want_outerwear=False, limit=5, per_category=6,
+                  weather=None, with_accessory=True):
     """Enumerates plausible outfits from the candidate pool and returns the
     best ones, highest score first.
 
     Each outfit is one top, one bottom, footwear if available, plus outerwear
-    when the weather calls for it. The pool is capped per category so the
-    combinatorics stay small even for a large wardrobe.
+    when the weather calls for it. On a cool day a lighter top may be added
+    underneath, and an accessory alongside. The pool is capped per category so
+    the combinatorics stay small even for a large wardrobe.
     """
     by_category = {}
     for item in candidates:
@@ -238,12 +307,41 @@ def build_outfits(candidates, warmth_range, preference=None, penalties=None,
     bottoms = pool("bottom") or [None]
     shoes = pool("footwear") or [None]
     outer = (pool("outerwear") or [None]) if want_outerwear else [None]
+    accessories = pool("accessory")
+
+    layering = wants_layering(weather or {})
+
+    all_tops = by_category.get("top", [])
+    mid_layers = [i for i in all_tops if (i.get("warmth_level") or 3) >= MID_LAYER_MIN_WARMTH]
+    base_layers = [i for i in all_tops if (i.get("warmth_level") or 3) <= BASE_LAYER_MAX_WARMTH]
+
+    # On a cool day, wearing the mid layer over a lighter one is simply how
+    # people dress - so when the wardrobe holds both, the outer of the two
+    # leads and the lighter one goes underneath. Scoring alone would not get
+    # there: a t-shirt on its own scores perfectly well, it is just not what
+    # anyone would wear in ten degrees.
+    if layering and mid_layers and base_layers:
+        tops = sorted(mid_layers, key=lambda i: (penalties or {}).get(i["id"], 0))[:per_category]
 
     scored = []
     for combo in itertools.product(tops, bottoms, shoes, outer):
         items = [item for item in combo if item]
         if not items:
             continue
+
+        worn_top = combo[0]
+        if layering and worn_top:
+            base = pick_base_layer(by_category.get("top", []), worn_top, penalties)
+            if base:
+                # The base layer sits first: the composition reads the list in
+                # the order the clothes go on.
+                items = [base] + items
+
+        if with_accessory and accessories:
+            accessory = pick_accessory(accessories, items, penalties)
+            if accessory:
+                items = items + [accessory]
+
         score, notes = score_outfit(items, warmth_range, preference, penalties)
         scored.append({"items": items, "score": round(score, 3), "notes": notes})
 
