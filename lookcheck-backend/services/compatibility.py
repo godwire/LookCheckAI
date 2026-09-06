@@ -366,4 +366,4 @@ def build_outfits(candidates, warmth_range, preference=None, penalties=None,
 def describe(entry):
     """Short, human explanation used when no language model is available."""
     notes = entry["notes"]
-    return f"{notes['style'].capitalize()}, built on {notes['color']}."
+    return f"{notes['style'].capitalize()}, built on {notes['color']}"

@@ -23,12 +23,24 @@
     "android": {
       "package": "com.godwire.lookcheckai",
       "versionCode": 1,
-      "permissions": ["CAMERA", "ACCESS_COARSE_LOCATION", "ACCESS_FINE_LOCATION"],
+      "permissions": [
+        "CAMERA",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION"
+      ],
       "edgeToEdgeEnabled": true
     },
     "extra": {
       "_comment": "Leave apiBaseUrl empty during development - the app detects your computer's address automatically. Set it to your deployed backend URL (https://...) before building for the stores.",
-      "apiBaseUrl": ""
-    }
+      "apiBaseUrl": "",
+      "eas": {
+        "projectId": "5a126820-c62f-438d-8893-e98a5083438f"
+      }
+    },
+    "owner": "godwires-team",
+    "plugins": [
+      "expo-splash-screen",
+      "expo-status-bar"
+    ]
   }
 }
