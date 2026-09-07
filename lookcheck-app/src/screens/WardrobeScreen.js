@@ -1,5 +1,6 @@
 import React, {
   useCallback,
+  useEffect,
   useMemo,
   useState,
 } from 'react';
@@ -12,14 +13,24 @@ import {
   TouchableOpacity,
   Alert,
   LayoutAnimation,
+  useWindowDimensions,
 } from 'react-native';
+
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { useFocusEffect } from '@react-navigation/native';
 
 import { api } from '../api/client';
 
 import ClothingCard from '../components/ClothingCard';
+import ClothingTile from '../components/ClothingTile';
+import ItemSheet from '../components/ItemSheet';
 import WardrobeFilterChip from '../components/WardrobeFilterChip';
+
+import WardrobeViewSwitcher, {
+  VIEW_MODES,
+  DEFAULT_VIEW_MODE,
+} from '../components/WardrobeViewSwitcher';
 
 import {
   colors,
@@ -43,13 +54,67 @@ const CHIP_HEIGHT = 36;
 const FILTER_ROW_HEIGHT =
   CHIP_HEIGHT + space.lg;
 
+const GRID_GAP = space.md;
+
+const VIEW_MODE_KEY = 'wardrobe:viewMode';
+
 export default function WardrobeScreen({
   navigation,
 }) {
+  const { width } = useWindowDimensions();
+
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState('all');
+
+  /* Row view opens a card in place; tile views open a sheet. */
   const [expandedId, setExpandedId] = useState(null);
+  const [sheetId, setSheetId] = useState(null);
+
+  const [viewMode, setViewMode] = useState(DEFAULT_VIEW_MODE);
+  const [viewReady, setViewReady] = useState(false);
+
+  /*
+   * The chosen layout is a preference, not a session detail: someone who
+   * reads their wardrobe as small tiles wants it that way tomorrow too.
+   * The list is held back until the stored choice is known, so the screen
+   * does not open in rows and then rearrange itself.
+   */
+  useEffect(() => {
+    let active = true;
+
+    (async () => {
+      try {
+        const stored = await AsyncStorage.getItem(VIEW_MODE_KEY);
+
+        if (active && stored && VIEW_MODES[stored]) {
+          setViewMode(stored);
+        }
+      } catch {
+        /* A missing preference is not worth interrupting the screen for. */
+      } finally {
+        if (active) setViewReady(true);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  function changeViewMode(next) {
+    if (next === viewMode) return;
+
+    LayoutAnimation.configureNext(
+      LayoutAnimation.Presets.easeInEaseOut
+    );
+
+    setExpandedId(null);
+    setSheetId(null);
+    setViewMode(next);
+
+    AsyncStorage.setItem(VIEW_MODE_KEY, next).catch(() => {});
+  }
 
   const loadWardrobe = useCallback(
     async () => {
@@ -118,6 +183,30 @@ export default function WardrobeScreen({
     [items, activeFilter]
   );
 
+  /*
+   * Read the sheet's garment out of the live list rather than storing a
+   * copy of it, so an edit made on another screen is reflected when the
+   * wardrobe reloads on focus.
+   */
+  const sheetItem = useMemo(
+    () =>
+      sheetId === null
+        ? null
+        : items.find(
+            (item) => item.id === sheetId
+          ) || null,
+    [items, sheetId]
+  );
+
+  const columns = VIEW_MODES[viewMode].columns;
+  const isGrid = columns > 1;
+
+  const tileWidth =
+    (width -
+      space.xl * 2 -
+      GRID_GAP * (columns - 1)) /
+    columns;
+
   function toggle(itemId) {
     setExpandedId((current) =>
       current === itemId
@@ -153,6 +242,7 @@ export default function WardrobeScreen({
     );
 
     setExpandedId(null);
+    setSheetId(null);
 
     setItems((prev) =>
       prev.filter(
@@ -170,6 +260,31 @@ export default function WardrobeScreen({
         err.message
       );
     }
+  }
+
+  function renderItem({ item }) {
+    if (isGrid) {
+      return (
+        <ClothingTile
+          item={item}
+          width={tileWidth}
+          dense={columns > 2}
+          onPress={() => setSheetId(item.id)}
+        />
+      );
+    }
+
+    return (
+      <ClothingCard
+        item={item}
+        expanded={expandedId === item.id}
+        onToggle={() => toggle(item.id)}
+        onEdit={() =>
+          navigation.navigate('EditItem', { item })
+        }
+        onDelete={() => confirmDelete(item)}
+      />
+    );
   }
 
   return (
@@ -218,6 +333,7 @@ export default function WardrobeScreen({
       {items.length > 0 && (
         <View style={styles.filterRow}>
           <FlatList
+            style={styles.filterList}
             horizontal
             data={availableFilters}
             keyExtractor={(value) => value}
@@ -247,6 +363,13 @@ export default function WardrobeScreen({
               );
             }}
           />
+
+          <View style={styles.switcher}>
+            <WardrobeViewSwitcher
+              mode={viewMode}
+              onChange={changeViewMode}
+            />
+          </View>
         </View>
       )}
 
@@ -273,33 +396,24 @@ export default function WardrobeScreen({
             </Text>
           </TouchableOpacity>
         </View>
-      ) : (
+      ) : viewReady ? (
         <FlatList
+          /*
+           * FlatList cannot change its column count in place, so the key
+           * carries the layout - switching views remounts the list rather
+           * than leaving it in a half-measured state.
+           */
+          key={`wardrobe-${columns}`}
           style={styles.list}
           data={visible}
+          numColumns={columns}
           keyExtractor={(item) =>
             String(item.id)
           }
-          renderItem={({ item }) => (
-            <ClothingCard
-              item={item}
-              expanded={
-                expandedId === item.id
-              }
-              onToggle={() =>
-                toggle(item.id)
-              }
-              onEdit={() =>
-                navigation.navigate(
-                  'EditItem',
-                  { item }
-                )
-              }
-              onDelete={() =>
-                confirmDelete(item)
-              }
-            />
-          )}
+          renderItem={renderItem}
+          columnWrapperStyle={
+            isGrid ? styles.column : undefined
+          }
           onRefresh={loadWardrobe}
           refreshing={loading}
           contentContainerStyle={
@@ -307,7 +421,26 @@ export default function WardrobeScreen({
           }
           showsVerticalScrollIndicator={false}
         />
+      ) : (
+        <View style={styles.list} />
       )}
+
+      <ItemSheet
+        item={sheetItem}
+        onClose={() => setSheetId(null)}
+        onEdit={() => {
+          const item = sheetItem;
+
+          setSheetId(null);
+
+          if (item) {
+            navigation.navigate('EditItem', { item });
+          }
+        }}
+        onDelete={() => {
+          if (sheetItem) confirmDelete(sheetItem);
+        }}
+      />
     </View>
   );
 }
@@ -377,18 +510,41 @@ const styles = StyleSheet.create({
   filterRow: {
     height: FILTER_ROW_HEIGHT,
 
+    flexDirection: 'row',
+    alignItems: 'center',
+
     flexGrow: 0,
     flexShrink: 0,
 
-    justifyContent: 'center',
-
     marginTop: space.lg,
+  },
+
+  filterList: {
+    flex: 1,
   },
 
   filterContent: {
     alignItems: 'center',
 
-    paddingHorizontal: space.xl,
+    paddingLeft: space.xl,
+    paddingRight: space.sm,
+  },
+
+  /*
+   * The switcher sits outside the scrolling chips: it is a property of the
+   * whole wardrobe, not one more thing to filter by, and it should stay
+   * reachable however far the categories are scrolled.
+   */
+  switcher: {
+    justifyContent: 'center',
+
+    paddingLeft: space.sm,
+    paddingRight: space.xl,
+
+    borderLeftWidth: 1,
+    borderLeftColor: colors.line,
+
+    marginLeft: space.xs,
   },
 
   list: {
@@ -399,6 +555,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.xl,
     paddingTop: space.md,
     paddingBottom: space.xxxl,
+  },
+
+  column: {
+    gap: GRID_GAP,
+    marginBottom: GRID_GAP + space.xs,
   },
 
   empty: {
