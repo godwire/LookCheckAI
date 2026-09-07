@@ -71,4 +71,4 @@ Hosted backend and object storage · release on iOS and Android · real preferen
 
 ---
 
-All rights reserved — public for demonstration and portfolio purposes. See [`LICENSE`](LICENSE). Recommendations are subjective and not professional styling advice.
+All rights reserved — public for demonstration and portfolio purposes.  See [`LICENSE`](LICENSE). Recommendations are subjective and not professional styling advice.
