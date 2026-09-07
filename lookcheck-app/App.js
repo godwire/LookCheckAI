@@ -1,21 +1,30 @@
 import React from 'react';
 import { ActivityIndicator, Text, View, StyleSheet } from 'react-native';
+
 import { NavigationContainer, DarkTheme } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
+
 import { StatusBar } from 'expo-status-bar';
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 
 import { AuthProvider, useAuth } from './src/context/AuthContext';
+
 import { colors, type } from './src/theme';
+
 import LoginScreen from './src/screens/LoginScreen';
 import RegisterScreen from './src/screens/RegisterScreen';
+
 import TodayLookScreen from './src/screens/TodayLookScreen';
 import EventLookScreen from './src/screens/EventLookScreen';
 import WardrobeScreen from './src/screens/WardrobeScreen';
+
 import AddItemScreen from './src/screens/AddItemScreen';
 import EditItemScreen from './src/screens/EditItemScreen';
+
 import LooksScreen from './src/screens/LooksScreen';
 import LookBuilderScreen from './src/screens/LookBuilderScreen';
+
 import SettingsScreen from './src/screens/SettingsScreen';
 
 const Tab = createBottomTabNavigator();
@@ -34,21 +43,52 @@ const navigationTheme = {
   },
 };
 
-/**
- * Tab marks are typographic rather than pictorial: at this size a wordmark
- * reads faster than an icon, and it keeps the chrome in the same achromatic
- * register as the rest of the app.
- */
-const TAB_MARKS = { Today: '—', Occasions: '◇', Wardrobe: '▤', Settings: '≡' };
+const TAB_ICONS = {
+  Today: {
+    active: 'home-variant',
+    inactive: 'home-variant-outline',
+  },
+  Occasions: {
+    active: 'calendar-blank',
+    inactive: 'calendar-blank-outline',
+  },
+  Wardrobe: {
+    active: 'tshirt-crew',
+    inactive: 'tshirt-crew-outline',
+  },
+  Settings: {
+    active: 'cog',
+    inactive: 'cog-outline',
+  },
+};
 
 function WardrobeStackScreen() {
   return (
     <WardrobeStack.Navigator screenOptions={{ headerShown: false }}>
-      <WardrobeStack.Screen name="WardrobeList" component={WardrobeScreen} />
-      <WardrobeStack.Screen name="AddItem" component={AddItemScreen} />
-      <WardrobeStack.Screen name="EditItem" component={EditItemScreen} />
-      <WardrobeStack.Screen name="Looks" component={LooksScreen} />
-      <WardrobeStack.Screen name="LookBuilder" component={LookBuilderScreen} />
+      <WardrobeStack.Screen
+        name="WardrobeList"
+        component={WardrobeScreen}
+      />
+
+      <WardrobeStack.Screen
+        name="AddItem"
+        component={AddItemScreen}
+      />
+
+      <WardrobeStack.Screen
+        name="EditItem"
+        component={EditItemScreen}
+      />
+
+      <WardrobeStack.Screen
+        name="Looks"
+        component={LooksScreen}
+      />
+
+      <WardrobeStack.Screen
+        name="LookBuilder"
+        component={LookBuilderScreen}
+      />
     </WardrobeStack.Navigator>
   );
 }
@@ -58,30 +98,69 @@ function MainTabs() {
     <Tab.Navigator
       screenOptions={({ route }) => ({
         headerShown: false,
+
         tabBarStyle: {
           backgroundColor: colors.ink,
           borderTopColor: colors.line,
           borderTopWidth: 1,
-          height: 88,
-          paddingTop: 10,
+
+          height: 84,
+
+          paddingTop: 7,
+          paddingBottom: 6,
         },
+
         tabBarActiveTintColor: colors.text,
         tabBarInactiveTintColor: colors.textFaint,
+
         tabBarLabelStyle: {
           fontSize: 10,
-          fontWeight: '700',
-          letterSpacing: 0.8,
-          textTransform: 'uppercase',
+          fontWeight: '600',
+          letterSpacing: 0.3,
+          textTransform: 'none',
+          marginTop: 1,
         },
-        tabBarIcon: ({ color }) => (
-          <Text style={{ fontSize: 16, color, marginBottom: 2 }}>{TAB_MARKS[route.name]}</Text>
-        ),
+
+        tabBarIconStyle: {
+          marginBottom: 0,
+        },
+
+        tabBarItemStyle: {
+          paddingVertical: 2,
+        },
+
+        tabBarIcon: ({ focused, color }) => {
+          const icons = TAB_ICONS[route.name];
+
+          return (
+            <MaterialCommunityIcons
+              name={focused ? icons.active : icons.inactive}
+              size={22}
+              color={color}
+            />
+          );
+        },
       })}
     >
-      <Tab.Screen name="Today" component={TodayLookScreen} />
-      <Tab.Screen name="Occasions" component={EventLookScreen} />
-      <Tab.Screen name="Wardrobe" component={WardrobeStackScreen} />
-      <Tab.Screen name="Settings" component={SettingsScreen} />
+      <Tab.Screen
+        name="Today"
+        component={TodayLookScreen}
+      />
+
+      <Tab.Screen
+        name="Occasions"
+        component={EventLookScreen}
+      />
+
+      <Tab.Screen
+        name="Wardrobe"
+        component={WardrobeStackScreen}
+      />
+
+      <Tab.Screen
+        name="Settings"
+        component={SettingsScreen}
+      />
     </Tab.Navigator>
   );
 }
@@ -89,8 +168,15 @@ function MainTabs() {
 function AuthFlow() {
   return (
     <AuthStack.Navigator screenOptions={{ headerShown: false }}>
-      <AuthStack.Screen name="Login" component={LoginScreen} />
-      <AuthStack.Screen name="Register" component={RegisterScreen} />
+      <AuthStack.Screen
+        name="Login"
+        component={LoginScreen}
+      />
+
+      <AuthStack.Screen
+        name="Register"
+        component={RegisterScreen}
+      />
     </AuthStack.Navigator>
   );
 }
@@ -101,8 +187,14 @@ function RootNavigator() {
   if (loading) {
     return (
       <View style={styles.splash}>
-        <Text style={styles.splashMark}>LOOKCHECK</Text>
-        <ActivityIndicator color={colors.accent} style={{ marginTop: 20 }} />
+        <Text style={styles.splashMark}>
+          LOOKCHECK
+        </Text>
+
+        <ActivityIndicator
+          color={colors.accent}
+          style={{ marginTop: 20 }}
+        />
       </View>
     );
   }
@@ -118,12 +210,23 @@ export default function App() {
   return (
     <AuthProvider>
       <StatusBar style="light" />
+
       <RootNavigator />
     </AuthProvider>
   );
 }
 
 const styles = StyleSheet.create({
-  splash: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.ink },
-  splashMark: { ...type.title, letterSpacing: 4, fontSize: 20 },
+  splash: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.ink,
+  },
+
+  splashMark: {
+    ...type.title,
+    letterSpacing: 4,
+    fontSize: 20,
+  },
 });
