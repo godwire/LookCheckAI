@@ -16,6 +16,8 @@ Most styling apps are shops — they recommend what to buy. This one starts from
 
 ## What it does
 
+https://github.com/user-attachments/assets/b6fc2104-f051-46a0-9ae9-c0ce191c52b3
+
 **Add a piece four ways** — photograph it, paste a shop link, attach your own picture, or type it in. A vision model reads the garment and fills in category, colour, style and warmth.
 
 **Get an outfit every morning** — matched to the weather, the occasion, and what you wore recently.
