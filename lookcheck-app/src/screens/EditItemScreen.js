@@ -29,6 +29,7 @@ export default function EditItemScreen({ route, navigation }) {
   const [imageUrl, setImageUrl] = useState(original.image_url || null);
   const [cutoutUrl, setCutoutUrl] = useState(original.cutout_url || null);
   const [cutoutJoins, setCutoutJoins] = useState(original.cutout_joins || null);
+  const [cutoutOpenUrl, setCutoutOpenUrl] = useState(original.cutout_open_url || null);
 
   const [uploading, setUploading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -57,11 +58,12 @@ export default function EditItemScreen({ route, navigation }) {
 
     setUploading(true);
     try {
-      const { image_url, cutout_url, cutout_joins } =
+      const { image_url, cutout_url, cutout_joins, cutout_open_url } =
         await api.uploadItemPhoto(result.assets[0].uri);
       setImageUrl(image_url);
       setCutoutUrl(cutout_url || null);
       setCutoutJoins(cutout_joins || null);
+      setCutoutOpenUrl(cutout_open_url || null);
     } catch (err) {
       Alert.alert('Photo not saved', err.message);
     } finally {
@@ -93,6 +95,7 @@ export default function EditItemScreen({ route, navigation }) {
         image_url: imageUrl,
         cutout_url: cutoutUrl,
         cutout_joins: cutoutJoins,
+        cutout_open_url: cutoutOpenUrl,
       });
       navigation.goBack();
     } catch (err) {

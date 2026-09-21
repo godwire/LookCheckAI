@@ -282,6 +282,82 @@ def make_cutout(image):
 
 
 # ---------------------------------------------------------------------------
+# Front-opening variant
+# ---------------------------------------------------------------------------
+
+# How wide the opening is, as a share of the garment's own width. Wide enough
+# to read clearly as unzipped; narrow enough that both halves still look like
+# the same jacket.
+OPEN_FRONT_GAP_RATIO = 0.18
+
+
+def open_front(image):
+    """A second cut-out of the same garment, split down the centre with each
+    half slid in toward its own outer edge - a jacket or cardigan shown open,
+    for laying a lighter piece underneath it in the gap.
+
+    This is not generation: nothing is invented or redrawn. Each half is
+    rescaled horizontally toward the edge the camera already placed it at (a
+    sleeve, a side seam), so that edge never moves - only the region nearest
+    the centre seam, which is where the zip or buttons run and is usually a
+    single fabric colour, is compressed to open a gap.
+
+    An earlier version rotated each half open around a pivot at the hem, the
+    way a real door swings. It looked broken: a sleeve sits far from that
+    pivot, so a few degrees of rotation threw it sideways out of proportion.
+    A garment shot lying flat has no hinge, and horizontal compression reads
+    as "open" without moving anything the camera didn't already place there.
+    """
+    width, height = image.size
+    box = image.getchannel("A").getbbox()
+    if not box:
+        return image
+
+    left, top, right, bottom = box
+    if (right - left) < 20:
+        return image
+
+    centre = (left + right) / 2.0
+    gap = (right - left) * OPEN_FRONT_GAP_RATIO
+
+    canvas = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+
+    left_w = max(1, int(round((centre - left) - gap / 2)))
+    left_piece = image.crop((left, 0, int(round(centre)), height))
+    left_piece = left_piece.resize((left_w, height), Image.LANCZOS)
+    canvas.alpha_composite(left_piece, (int(left), 0))
+
+    right_w = max(1, int(round((right - centre) - gap / 2)))
+    right_piece = image.crop((int(round(centre)), 0, right, height))
+    right_piece = right_piece.resize((right_w, height), Image.LANCZOS)
+    canvas.alpha_composite(right_piece, (int(right) - right_w, 0))
+
+    return canvas
+
+
+def make_open_front_cutout(cut_out):
+    """A transparent PNG of the garment opened down the centre, trimmed and
+    capped the same way the regular cut-out is. None if nothing is left.
+    """
+    opened = open_front(cut_out)
+    trimmed = opened.crop(_content_bbox(opened))
+    if trimmed.width < 20 or trimmed.height < 20:
+        return None
+
+    longest = max(trimmed.width, trimmed.height)
+    if longest > config.IMAGE_SIZE:
+        scale = config.IMAGE_SIZE / float(longest)
+        trimmed = trimmed.resize(
+            (max(1, int(trimmed.width * scale)), max(1, int(trimmed.height * scale))),
+            Image.LANCZOS,
+        )
+
+    buffer = io.BytesIO()
+    trimmed.save(buffer, format="PNG", optimize=True)
+    return buffer.getvalue()
+
+
+# ---------------------------------------------------------------------------
 # Quality checks
 # ---------------------------------------------------------------------------
 
@@ -365,17 +441,21 @@ def delete(image_url):
 # ---------------------------------------------------------------------------
 
 def process(image_bytes, box=None, want_cutout=None):
-    """Runs the full pipeline. Returns (jpeg_bytes, png_bytes_or_None, meta).
+    """Runs the full pipeline. Returns (jpeg_bytes, png_bytes_or_None,
+    open_png_bytes_or_None, meta).
 
-    Two artefacts come out of one pass over the image:
+    Three artefacts come out of one pass over the image:
 
     - a JPEG on the tile ground, which is what a wardrobe card shows;
     - a PNG with transparency, when the garment could actually be separated
-      from its background.
+      from its background;
+    - a second PNG of the same cut-out opened down the centre (see
+      `open_front`), for laying a lighter piece underneath a garment with a
+      front closure.
 
     The PNG is what makes an outfit composable: garments can only be laid over
-    one another convincingly if each one is cut out. Producing both here means
-    the expensive part - segmentation - is paid for once.
+    one another convincingly if each one is cut out. Producing all three here
+    means the expensive part - segmentation - is paid for once.
 
     Raises ImageProcessingError with a user-facing message when the result
     would not be worth showing.
@@ -398,6 +478,7 @@ def process(image_bytes, box=None, want_cutout=None):
     flatten(normalized).save(buffer, format="JPEG", quality=88, optimize=True)
 
     cutout_bytes = None
+    open_bytes = None
     joins = None
     if had_cutout:
         # The cut-out is saved trimmed to the garment, with no padding and no
@@ -406,8 +487,12 @@ def process(image_bytes, box=None, want_cutout=None):
         # padded to a square, every piece measures 1:1 and gets stretched.
         cutout_bytes = make_cutout(cut_out)
         joins = measure_joins(normalized.crop(_content_bbox(normalized)))
+        # Produced unconditionally - it's cheap, and whether a garment
+        # actually has a front closure worth showing open is a judgement
+        # about its description, not something this pipeline knows.
+        open_bytes = make_open_front_cutout(cut_out)
 
-    return buffer.getvalue(), cutout_bytes, {
+    return buffer.getvalue(), cutout_bytes, open_bytes, {
         "joins": joins,
         "source_size": list(source.size),
         "cropped_to_box": cropped.size != source.size,

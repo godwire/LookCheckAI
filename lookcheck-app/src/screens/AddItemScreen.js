@@ -45,6 +45,7 @@ export default function AddItemScreen({ navigation }) {
   const [imageUrl, setImageUrl] = useState(null);
   const [cutoutUrl, setCutoutUrl] = useState(null);
   const [cutoutJoins, setCutoutJoins] = useState(null);
+  const [cutoutOpenUrl, setCutoutOpenUrl] = useState(null);
   const [analyzed, setAnalyzed] = useState(false);
 
   async function handleMethod(key) {
@@ -100,11 +101,12 @@ export default function AddItemScreen({ navigation }) {
 
     setUploading(true);
     try {
-      const { image_url, cutout_url, cutout_joins } =
+      const { image_url, cutout_url, cutout_joins, cutout_open_url } =
         await api.uploadItemPhoto(result.assets[0].uri);
       setImageUrl(image_url);
       setCutoutUrl(cutout_url || null);
       setCutoutJoins(cutout_joins || null);
+      setCutoutOpenUrl(cutout_open_url || null);
     } catch (err) {
       Alert.alert('Photo not saved', err.message);
     } finally {
@@ -192,6 +194,7 @@ export default function AddItemScreen({ navigation }) {
     if (attrs.image_url) setImageUrl(attrs.image_url);
     if (attrs.cutout_url) setCutoutUrl(attrs.cutout_url);
     if (attrs.cutout_joins) setCutoutJoins(attrs.cutout_joins);
+    if (attrs.cutout_open_url) setCutoutOpenUrl(attrs.cutout_open_url);
     setCandidates(null);
     setAnalyzed(true);
   }
@@ -213,6 +216,7 @@ export default function AddItemScreen({ navigation }) {
         image_url: imageUrl,
         cutout_url: cutoutUrl,
         cutout_joins: cutoutJoins,
+        cutout_open_url: cutoutOpenUrl,
       });
       navigation.goBack();
     } catch (err) {

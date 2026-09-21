@@ -258,6 +258,7 @@ def add_wardrobe_item():
         image_url=data.get("image_url"),
         cutout_url=data.get("cutout_url"),
         cutout_joins=data.get("cutout_joins"),
+        cutout_open_url=data.get("cutout_open_url"),
         source_link=data.get("source_link"),
     )
     return jsonify(database.get_clothing_item(item_id, g.user_id)), 201
@@ -295,12 +296,14 @@ def update_wardrobe_item(item_id):
         fields["cutout_url"] = data["cutout_url"] or None
     if "cutout_joins" in data:
         fields["cutout_joins"] = data["cutout_joins"] or None
+    if "cutout_open_url" in data:
+        fields["cutout_open_url"] = data["cutout_open_url"] or None
 
     updated = database.update_clothing_item(item_id, g.user_id, fields)
 
     # A replaced tile is no longer reachable from anywhere - remove the file
     # rather than accumulating orphans on disk.
-    for key in ("image_url", "cutout_url"):
+    for key in ("image_url", "cutout_url", "cutout_open_url"):
         previous = existing.get(key)
         if key in fields and previous and previous != fields[key]:
             image_service.delete(previous)
@@ -319,6 +322,7 @@ def delete_wardrobe_item(item_id):
     database.prune_saved_outfits(g.user_id, item_id)
     image_service.delete(existing.get("image_url"))
     image_service.delete(existing.get("cutout_url"))
+    image_service.delete(existing.get("cutout_open_url"))
     return "", 204
 
 
@@ -356,13 +360,14 @@ def upload_item_photo():
         return error("The uploaded file is empty.")
 
     try:
-        tile, cutout, meta = image_service.process(image_bytes)
+        tile, cutout, opened, meta = image_service.process(image_bytes)
     except image_service.ImageProcessingError as exc:
         return error(str(exc), 422)
 
     return jsonify({
         "image_url": image_service.save(g.user_id, tile),
         "cutout_url": image_service.save(g.user_id, cutout, suffix="png") if cutout else None,
+        "cutout_open_url": image_service.save(g.user_id, opened, suffix="png") if opened else None,
         "cutout_joins": json.dumps(meta["joins"]) if meta.get("joins") else None,
         "image_meta": meta,
     })
@@ -402,7 +407,7 @@ def analyze_photo():
     candidates, failures = [], []
     for item in detected:
         try:
-            tile, cutout, tile_meta = image_service.process(
+            tile, cutout, opened, tile_meta = image_service.process(
                 image_bytes, item.get("bounding_box")
             )
         except image_service.ImageProcessingError as exc:
@@ -413,6 +418,9 @@ def analyze_photo():
         candidate["image_url"] = image_service.save(g.user_id, tile)
         candidate["cutout_url"] = (
             image_service.save(g.user_id, cutout, suffix="png") if cutout else None
+        )
+        candidate["cutout_open_url"] = (
+            image_service.save(g.user_id, opened, suffix="png") if opened else None
         )
         candidate["cutout_joins"] = (
             json.dumps(tile_meta["joins"]) if tile_meta.get("joins") else None
@@ -500,10 +508,13 @@ def parse_link():
     # wardrobe does not depend on someone else's CDN staying friendly.
     if image_bytes:
         try:
-            tile, cutout, tile_meta = image_service.process(image_bytes, box)
+            tile, cutout, opened, tile_meta = image_service.process(image_bytes, box)
             attributes["image_url"] = image_service.save(g.user_id, tile)
             attributes["cutout_url"] = (
                 image_service.save(g.user_id, cutout, suffix="png") if cutout else None
+            )
+            attributes["cutout_open_url"] = (
+                image_service.save(g.user_id, opened, suffix="png") if opened else None
             )
             attributes["cutout_joins"] = (
                 json.dumps(tile_meta["joins"]) if tile_meta.get("joins") else None

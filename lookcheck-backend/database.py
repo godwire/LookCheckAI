@@ -100,6 +100,7 @@ def _now():
 MIGRATIONS = (
     ("clothes", "cutout_url", "TEXT"),
     ("clothes", "cutout_joins", "TEXT"),
+    ("clothes", "cutout_open_url", "TEXT"),
 )
 
 
@@ -235,16 +236,16 @@ def delete_user(user_id):
 
 def add_clothing_item(user_id, category, color, style, warmth_level,
                       description=None, image_url=None, source_link=None,
-                      cutout_url=None, cutout_joins=None):
+                      cutout_url=None, cutout_joins=None, cutout_open_url=None):
     with db_cursor() as cur:
         return _insert(
             cur,
             """INSERT INTO clothes
                (user_id, category, color, style, warmth_level, description,
-                image_url, cutout_url, cutout_joins, source_link)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                image_url, cutout_url, cutout_joins, cutout_open_url, source_link)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (user_id, category, color, style, warmth_level,
-             description, image_url, cutout_url, cutout_joins, source_link),
+             description, image_url, cutout_url, cutout_joins, cutout_open_url, source_link),
         )
 
 
@@ -296,7 +297,7 @@ def get_clothing_items_by_ids(item_ids, user_id):
 def update_clothing_item(item_id, user_id, fields):
     allowed = ("category", "color", "style", "warmth_level",
                "description", "image_url", "cutout_url", "cutout_joins",
-               "source_link")
+               "cutout_open_url", "source_link")
     sets, params = [], []
     for key in allowed:
         if key in fields:

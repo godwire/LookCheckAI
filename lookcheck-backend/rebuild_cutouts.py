@@ -1,6 +1,7 @@
 """
-Repairs cut-outs saved before they were trimmed, and fills in the join
-measurements behind them.
+Repairs cut-outs saved before they were trimmed, fills in the join
+measurements behind them, and backfills the front-opened variant introduced
+later (see `image_service.open_front`).
 
 Early cut-outs were written as padded 800x800 squares. Anything measuring
 them sees every garment as 1:1, so a jacket, a pair of trousers and a pair of
@@ -10,7 +11,7 @@ composition was doing.
 Nothing is re-photographed and nothing is sent anywhere: the stored PNG
 already carries the garment's alpha, so trimming it to its own content
 recovers the true proportions. Joins are then measured from the trimmed
-image.
+image, and the opened variant is generated from that same trimmed image.
 
 Usage, with the backend's virtual environment active:
 
@@ -47,8 +48,8 @@ def main():
     with database.db_cursor(commit=False) as cur:
         cur.execute(
             database._q(
-                "SELECT id, user_id, category, color, cutout_url, cutout_joins "
-                "FROM clothes WHERE cutout_url IS NOT NULL"
+                "SELECT id, user_id, category, color, cutout_url, cutout_joins, "
+                "cutout_open_url FROM clothes WHERE cutout_url IS NOT NULL"
             )
         )
         items = database._all(cur)
@@ -58,7 +59,7 @@ def main():
         return
 
     print(f"{len(items)} cut-out(s) found\n")
-    repaired = measured = skipped = 0
+    repaired = measured = opened_count = skipped = 0
 
     for item in items:
         label = f"#{item['id']} {item['color']} {item['category']}"
@@ -81,8 +82,9 @@ def main():
         # Offsets were added after the first version of the measurements, so a
         # record without them is out of date even though it is not empty.
         needs_joins = "top_offset" not in recorded
+        needs_open = not item["cutout_open_url"]
 
-        if not needs_trim and not needs_joins:
+        if not needs_trim and not needs_joins and not needs_open:
             print(f"  {label:34} already fine")
             continue
 
@@ -96,6 +98,9 @@ def main():
                 f"offset {joins['top_offset']:+.2f}/{joins['bottom_offset']:+.2f}"
             )
             measured += 1
+        if needs_open:
+            note.append("opened variant")
+            opened_count += 1
 
         print(f"  {label:34} {', '.join(note)}")
 
@@ -113,18 +118,28 @@ def main():
             # done nothing at all.
             new_url = image_service.save(item["user_id"], buffer.getvalue(), suffix="png")
 
+        open_url = item["cutout_open_url"]
+        if needs_open:
+            open_bytes = image_service.make_open_front_cutout(trimmed)
+            if open_bytes:
+                open_url = image_service.save(item["user_id"], open_bytes, suffix="png")
+
         with database.db_cursor() as cur:
             cur.execute(
                 database._q(
-                    "UPDATE clothes SET cutout_url = ?, cutout_joins = ? WHERE id = ?"
+                    "UPDATE clothes SET cutout_url = ?, cutout_joins = ?, "
+                    "cutout_open_url = ? WHERE id = ?"
                 ),
-                (new_url, json.dumps(joins), item["id"]),
+                (new_url, json.dumps(joins), open_url, item["id"]),
             )
 
         if new_url != item["cutout_url"]:
             os.remove(path)
 
-    print(f"\n{repaired} cut-out(s) trimmed, {measured} measured, {skipped} skipped")
+    print(
+        f"\n{repaired} cut-out(s) trimmed, {measured} measured, "
+        f"{opened_count} opened variant(s) generated, {skipped} skipped"
+    )
     if not APPLY:
         print("\nThis was a dry run. Re-run with --apply to write the changes.")
 

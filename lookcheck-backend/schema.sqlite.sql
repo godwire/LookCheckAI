@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS clothes (
     image_url    TEXT,
     cutout_url   TEXT,
     cutout_joins TEXT,
+    cutout_open_url TEXT,
     source_link  TEXT,
     archived     INTEGER NOT NULL DEFAULT 0,
     created_at   TEXT NOT NULL DEFAULT (datetime('now'))

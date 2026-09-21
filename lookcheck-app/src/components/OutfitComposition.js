@@ -52,10 +52,56 @@ const SHOE_TO_TOP = 0.75;
 // An outer layer is cut a little fuller than what goes under it.
 const OUTERWEAR_TO_TOP = 1.18;
 
-// How far a base layer spreads relative to the piece over it, and how far
-// down it starts - enough for a collar above and a hem below to show.
-const BASE_LAYER_SPREAD = 1.1;
-const BASE_LAYER_DROP = 0.1;
+// A base layer is shown only as a narrow band at the collar, clipped from its
+// own full-size image rather than laid out over the whole torso height.
+//
+// The two garments are photographed at whatever proportions their own shoot
+// happened to produce - a jacket shot with sleeves splayed comes out tall and
+// narrow, a t-shirt shot square comes out short and wide. Sizing the base
+// layer to spread across the *whole* torso and drop slightly down, as if the
+// two photos shared a proportion, means it mostly lands directly behind the
+// piece over it and only breaks the surface by accident, in whatever gaps
+// the top layer's silhouette happens to leave - a sleeve cuff here, a corner
+// of the hem there. That reads as a rendering glitch, not a layered outfit.
+//
+// A collar band sidesteps the mismatch entirely. The top of a garment is
+// where two garments actually show each other in real layering - a t-shirt
+// collar and shoulders beside a jacket's zip - and it is also where the
+// piece worn over it is naturally narrowest (a jacket's own join measurement
+// puts its collar at a fraction of its full width). Anchoring the base layer
+// at the same top edge and clipping it to a shallow band means only that
+// naturally-exposed collar area is ever drawn, at the base layer's own true
+// proportions, so there's no dependence on the two photos matching shape.
+const BASE_LAYER_SPREAD = 1.06;
+const BASE_LAYER_BAND = 0.16;
+
+/**
+ * When the piece over the base layer has a front closure - a zip, buttons -
+ * the backend also produces an "opened" cut-out of it: the same photo, split
+ * down the centre and each half slid toward its own outer edge (see
+ * `image_service.open_front`). Nothing is invented, only rearranged, so it
+ * stays true to the "composed, not generated" rule this whole component
+ * follows - it just gives the base layer an actual gap to sit in, rather
+ * than only ever peeking out at the collar.
+ *
+ * Whether a garment has a front closure at all isn't recorded anywhere, so
+ * it's read off the description the same way an accessory's placement is.
+ */
+const FRONT_OPENING_WORDS = [
+  'zip', 'zipper', 'zip-up', 'zipped', 'button', 'buttoned', 'snap',
+  'bomber', 'cardigan', 'blazer', 'windbreaker', 'track jacket', 'varsity',
+  'coach jacket', 'overshirt', 'shacket',
+];
+
+function hasFrontOpening(item) {
+  const text = `${item.description || ''}`.toLowerCase();
+  return FRONT_OPENING_WORDS.some((word) => text.includes(word));
+}
+
+// How wide the base layer sits, and how far it rises above the open torso's
+// own top edge, when it's shown fully in the gap rather than as a band.
+const OPEN_FRONT_BASE_WIDTH = 0.90;
+const OPEN_FRONT_BASE_RISE = 0.02;
 
 /**
  * A garment worn next to the skin, as opposed to one worn over it. Nothing
@@ -189,7 +235,7 @@ function placeAccessory(anchor, width, height, torso, waistSeam) {
   }
 }
 
-function computeLayout(items, aspects) {
+function computeLayout(items, aspects, openAspects) {
   const byCategory = {};
   const tops = [];
   const accessories = [];
@@ -213,6 +259,15 @@ function computeLayout(items, aspects) {
   const shoes = byCategory.footwear;
   if (!top && !bottom) return [];
 
+  // See FRONT_OPENING_WORDS above: with a base layer to show and an opened
+  // cut-out available for a garment that plausibly has a front closure, that
+  // cut-out is used for the torso instead of the closed one.
+  const useOpenFront = Boolean(
+    baseLayer && top && top.cutout_open_url && openAspects[top.id] && hasFrontOpening(top)
+  );
+  const topAspect = useOpenFront ? openAspects[top.id] : (top && aspects[top.id]);
+  const topUrl = top && (useOpenFront ? top.cutout_open_url : top.cutout_url);
+
   // Widths chain downwards from the top: each opening matches the hem above.
   const widths = {};
   if (top) widths.top = TOP_WIDTH;
@@ -230,9 +285,9 @@ function computeLayout(items, aspects) {
   const heights = {};
   COLUMN.forEach((category) => {
     const item = byCategory[category];
-    if (item && widths[category]) {
-      heights[category] = (widths[category] * CANVAS_RATIO) / aspects[item.id];
-    }
+    if (!item || !widths[category]) return;
+    const aspect = category === 'top' ? topAspect : aspects[item.id];
+    heights[category] = (widths[category] * CANVAS_RATIO) / aspect;
   });
 
   const stacked = COLUMN.filter((category) => heights[category]);
@@ -259,6 +314,7 @@ function computeLayout(items, aspects) {
 
     placed.push({
       item: byCategory[category],
+      imageUrl: category === 'top' ? topUrl : byCategory[category].cutout_url,
       left: 0.5 - width / 2 - seam * width,
       top: y,
       width,
@@ -289,21 +345,39 @@ function computeLayout(items, aspects) {
     });
   }
 
-  // A base layer sits under the piece over it, spread a little wider and
-  // dropped a little lower, so a collar shows above and a hem below. Without
-  // that the two tops would simply hide one another.
+  // A base layer sits under the piece over it. With an open-front torso
+  // there's an actual gap to show it in, so it's placed at close to the
+  // torso's own size and position. Otherwise it falls back to a shallow band
+  // at the collar - see BASE_LAYER_BAND above for why the full garment isn't
+  // laid out in that case.
   if (baseLayer && torso && aspects[baseLayer.id]) {
-    const width = torso.width * BASE_LAYER_SPREAD;
-    const height = (width * CANVAS_RATIO) / aspects[baseLayer.id];
-    placed.push({
-      item: baseLayer,
-      left: 0.5 - width / 2,
-      top: torso.top + torso.height * BASE_LAYER_DROP,
-      width,
-      height,
-      rotate: '0deg',
-      z: torso.z - 1,
-    });
+    if (useOpenFront) {
+      const width = torso.width * OPEN_FRONT_BASE_WIDTH;
+      const height = (width * CANVAS_RATIO) / aspects[baseLayer.id];
+      placed.push({
+        item: baseLayer,
+        left: 0.5 - width / 2,
+        top: torso.top - torso.height * OPEN_FRONT_BASE_RISE,
+        width,
+        height,
+        rotate: '0deg',
+        z: torso.z - 1,
+      });
+    } else {
+      const width = torso.width * BASE_LAYER_SPREAD;
+      const height = (width * CANVAS_RATIO) / aspects[baseLayer.id];
+      const peekHeight = Math.min(height, torso.height * BASE_LAYER_BAND);
+      placed.push({
+        item: baseLayer,
+        left: 0.5 - width / 2,
+        top: torso.top,
+        width,
+        height,
+        peekHeight,
+        rotate: '0deg',
+        z: torso.z - 1,
+      });
+    }
   }
 
   // Accessories go on last, where they would sit on a person.
@@ -340,6 +414,7 @@ export default function OutfitComposition({ items, style }) {
   );
 
   const [aspects, setAspects] = useState({});
+  const [openAspects, setOpenAspects] = useState({});
 
   // Cut-outs are stored trimmed to the garment, so their pixel dimensions are
   // the garment's own proportions. A padded square would measure 1:1 for
@@ -360,7 +435,31 @@ export default function OutfitComposition({ items, style }) {
     return () => { cancelled = true; };
   }, [wearable]);
 
-  const placed = useMemo(() => computeLayout(wearable, aspects), [wearable, aspects]);
+  // The opened variant is a different image with its own proportions, and is
+  // only ever needed for a garment that plausibly has a front closure - no
+  // point fetching it for every top.
+  useEffect(() => {
+    let cancelled = false;
+    wearable
+      .filter((item) => item.cutout_open_url && hasFrontOpening(item))
+      .forEach((item) => {
+        Image.getSize(
+          resolveImageUrl(item.cutout_open_url),
+          (width, height) => {
+            if (!cancelled && height > 0) {
+              setOpenAspects((current) => ({ ...current, [item.id]: width / height }));
+            }
+          },
+          () => {}
+        );
+      });
+    return () => { cancelled = true; };
+  }, [wearable]);
+
+  const placed = useMemo(
+    () => computeLayout(wearable, aspects, openAspects),
+    [wearable, aspects, openAspects]
+  );
 
   // Below three pieces this reads as scattered clothing rather than an outfit,
   // and until the sizes are measured there is nothing to lay out.
@@ -369,22 +468,42 @@ export default function OutfitComposition({ items, style }) {
   return (
     <>
       <Animated.View style={[styles.canvas, style]} entering={FadeIn.duration(280)}>
-        {placed.map((entry) => (
-          <Image
-            key={entry.item.id}
-            source={{ uri: resolveImageUrl(entry.item.cutout_url) }}
-            resizeMode="contain"
-            style={{
-              position: 'absolute',
-              left: `${entry.left * 100}%`,
-              top: `${entry.top * 100}%`,
-              width: `${entry.width * 100}%`,
-              height: `${entry.height * 100}%`,
-              transform: [{ rotate: entry.rotate }],
-              zIndex: entry.z,
-            }}
-          />
-        ))}
+        {placed.map((entry) => {
+          const image = (
+            <Image
+              source={{ uri: resolveImageUrl(entry.imageUrl || entry.item.cutout_url) }}
+              resizeMode="contain"
+              style={{
+                position: 'absolute',
+                left: 0,
+                top: 0,
+                width: '100%',
+                height: entry.peekHeight ? `${(entry.height / entry.peekHeight) * 100}%` : '100%',
+              }}
+            />
+          );
+
+          // A base layer's band is a window onto the top slice of its own
+          // full-size image: the container is only peekHeight tall, so the
+          // taller image inside it is clipped rather than squashed.
+          return (
+            <View
+              key={entry.item.id}
+              style={{
+                position: 'absolute',
+                left: `${entry.left * 100}%`,
+                top: `${entry.top * 100}%`,
+                width: `${entry.width * 100}%`,
+                height: `${(entry.peekHeight || entry.height) * 100}%`,
+                overflow: entry.peekHeight ? 'hidden' : 'visible',
+                transform: [{ rotate: entry.rotate }],
+                zIndex: entry.z,
+              }}
+            >
+              {image}
+            </View>
+          );
+        })}
         <Text style={styles.caption}>The look, laid out</Text>
       </Animated.View>
 
