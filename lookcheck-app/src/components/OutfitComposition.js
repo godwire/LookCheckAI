@@ -98,12 +98,11 @@ function hasFrontOpening(item) {
   return FRONT_OPENING_WORDS.some((word) => text.includes(word));
 }
 
-// How wide the base layer sits, when it's shown fully in the gap rather than
-// as a band. Flush with the open torso's own top edge, not lifted above it -
-// the collar is untouched by image_service.open_front now (see its
-// docstring), so there's no gap up there for the base layer to show through,
-// and lifting it just pokes it out above the shoulders instead.
-const OPEN_FRONT_BASE_WIDTH = 0.86;
+// The base layer shown in an open-front gap, as a share of the torso's own
+// box, centred within it. Smaller than the torso itself - filling the whole
+// box edge to edge left it looking like a slab rather than a garment worn
+// underneath.
+const OPEN_FRONT_BASE_SCALE = 0.68;
 
 /**
  * A garment worn next to the skin, as opposed to one worn over it. Nothing
@@ -348,25 +347,27 @@ function computeLayout(items, aspects, openAspects) {
   }
 
   // A base layer sits under the piece over it. With an open-front torso
-  // there's an actual gap to show it in, so it's given exactly the torso's
-  // own box - same size, same position - rather than a size worked out from
-  // its own photo. Two different photos are almost never shot at the same
-  // proportions, and sizing the base layer from its own would leave it
+  // there's an actual gap to show it in, so it's sized as a share of the
+  // torso's own box (OPEN_FRONT_BASE_SCALE), centred within it, rather than
+  // from its own photo. Two different photos are almost never shot at the
+  // same proportions, and sizing the base layer from its own would leave it
   // either poking out past the jacket's silhouette or falling short of the
-  // gap it's meant to fill. Filling the torso's own box, cropped to match
-  // (`cover`, not `contain`) keeps it exactly as large as the piece over it
-  // and never wider - which is what actually reads as "the same size",
-  // even at the cost of a sliver of the base layer's own photo being cropped
-  // off. Otherwise it falls back to a shallow band at the collar - see
-  // BASE_LAYER_BAND above for why the full garment isn't laid out that way.
+  // gap it's meant to fill. Cropped to match the scaled box (`cover`, not
+  // `contain`) so it reads as one consistent size rather than whatever shape
+  // its own photo happened to be, even at the cost of a sliver of that photo
+  // being cropped off. Otherwise it falls back to a shallow band at the
+  // collar - see BASE_LAYER_BAND above for why the full garment isn't laid
+  // out that way.
   if (baseLayer && torso && aspects[baseLayer.id]) {
     if (useOpenFront) {
+      const width = torso.width * OPEN_FRONT_BASE_SCALE;
+      const height = torso.height * OPEN_FRONT_BASE_SCALE;
       placed.push({
         item: baseLayer,
-        left: torso.left,
-        top: torso.top,
-        width: torso.width,
-        height: torso.height,
+        left: torso.left + (torso.width - width) / 2,
+        top: torso.top + (torso.height - height) / 2,
+        width,
+        height,
         cover: true,
         rotate: '0deg',
         z: torso.z - 1,
@@ -503,7 +504,7 @@ export default function OutfitComposition({ items, style }) {
                 top: `${entry.top * 100}%`,
                 width: `${entry.width * 100}%`,
                 height: `${(entry.peekHeight || entry.height) * 100}%`,
-                overflow: entry.peekHeight ? 'hidden' : 'visible',
+                overflow: entry.peekHeight || entry.cover ? 'hidden' : 'visible',
                 transform: [{ rotate: entry.rotate }],
                 zIndex: entry.z,
               }}
