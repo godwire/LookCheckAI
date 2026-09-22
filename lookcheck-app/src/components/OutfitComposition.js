@@ -98,10 +98,12 @@ function hasFrontOpening(item) {
   return FRONT_OPENING_WORDS.some((word) => text.includes(word));
 }
 
-// How wide the base layer sits, and how far it rises above the open torso's
-// own top edge, when it's shown fully in the gap rather than as a band.
-const OPEN_FRONT_BASE_WIDTH = 0.90;
-const OPEN_FRONT_BASE_RISE = 0.02;
+// How wide the base layer sits, when it's shown fully in the gap rather than
+// as a band. Flush with the open torso's own top edge, not lifted above it -
+// the collar is untouched by image_service.open_front now (see its
+// docstring), so there's no gap up there for the base layer to show through,
+// and lifting it just pokes it out above the shoulders instead.
+const OPEN_FRONT_BASE_WIDTH = 0.86;
 
 /**
  * A garment worn next to the skin, as opposed to one worn over it. Nothing
@@ -357,7 +359,7 @@ function computeLayout(items, aspects, openAspects) {
       placed.push({
         item: baseLayer,
         left: 0.5 - width / 2,
-        top: torso.top - torso.height * OPEN_FRONT_BASE_RISE,
+        top: torso.top,
         width,
         height,
         rotate: '0deg',
@@ -516,8 +518,10 @@ export default function OutfitComposition({ items, style }) {
             <Text key={entry.item.id} style={styles.debugRow}>
               {entry.item.category}
               {entry.item.category === 'accessory' ? ` @${anchorFor(entry.item).at}` : ''}
-              {'  w '}{entry.width.toFixed(2)} h {entry.height.toFixed(2)}
-              {'  y '}{entry.top.toFixed(2)} z {entry.z}
+              {'  w '}{entry.width.toFixed(3)} h {entry.height.toFixed(3)}
+              {'  x '}{entry.left.toFixed(3)} y {entry.top.toFixed(3)} z {entry.z}
+              {entry.peekHeight ? ` peek ${entry.peekHeight.toFixed(3)}` : ''}
+              {'\n    '}{(entry.imageUrl || entry.item.cutout_url || '').split('/').pop()}
             </Text>
           ))}
         </View>

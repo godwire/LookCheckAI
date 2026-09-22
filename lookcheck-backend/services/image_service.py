@@ -285,16 +285,27 @@ def make_cutout(image):
 # Front-opening variant
 # ---------------------------------------------------------------------------
 
-# How wide the opening is, as a share of the garment's own width. Wide enough
-# to read clearly as unzipped; narrow enough that both halves still look like
-# the same jacket.
-OPEN_FRONT_GAP_RATIO = 0.18
+# How wide the opening gets, as a share of the garment's own width, once it's
+# fully open. Wide enough to read clearly as unzipped; narrow enough that
+# both halves still look like the same jacket.
+OPEN_FRONT_GAP_RATIO = 0.22
+
+# Where the opening finishes widening, as a share of the garment's own height
+# from its top - see below for why it starts at the very top rather than
+# after a closed band.
+OPEN_FRONT_RAMP_END = 0.30
+OPEN_FRONT_RAMP_BANDS = 48
+
+
+def _smoothstep(u):
+    u = max(0.0, min(1.0, u))
+    return u * u * (3 - 2 * u)
 
 
 def open_front(image):
-    """A second cut-out of the same garment, split down the centre with each
-    half slid in toward its own outer edge - a jacket or cardigan shown open,
-    for laying a lighter piece underneath it in the gap.
+    """A second cut-out of the same garment, split down the centre below the
+    collar with each half slid toward its own outer edge - a jacket or
+    cardigan shown open, for laying a lighter piece underneath it in the gap.
 
     This is not generation: nothing is invented or redrawn. Each half is
     rescaled horizontally toward the edge the camera already placed it at (a
@@ -302,11 +313,22 @@ def open_front(image):
     the centre seam, which is where the zip or buttons run and is usually a
     single fabric colour, is compressed to open a gap.
 
-    An earlier version rotated each half open around a pivot at the hem, the
-    way a real door swings. It looked broken: a sleeve sits far from that
-    pivot, so a few degrees of rotation threw it sideways out of proportion.
-    A garment shot lying flat has no hinge, and horizontal compression reads
-    as "open" without moving anything the camera didn't already place there.
+    The gap is not constant from top to bottom. A stand-up or mock-neck
+    collar is a closed loop of fabric seamed at the back of the neck - it
+    doesn't split into two flaps the way the body of an unzipped jacket does.
+    Splitting the whole height evenly (an earlier version of this function
+    did exactly that) tore the collar in half along with the placket, which
+    reads as damage, not as "unzipped". So the top slice, roughly the collar,
+    is left untouched, and the gap widens smoothly from nothing to its full
+    width over a short band below it - the collar sits closed, the opening
+    starts right where a real one would, at the neckline seam.
+
+    An even earlier version rotated each half open around a pivot at the
+    hem, the way a real door swings. It looked broken: a sleeve sits far
+    from that pivot, so a few degrees of rotation threw it sideways out of
+    proportion. A garment shot lying flat has no hinge, and horizontal
+    compression reads as "open" without moving anything the camera didn't
+    already place there.
     """
     width, height = image.size
     box = image.getchannel("A").getbbox()
@@ -314,23 +336,46 @@ def open_front(image):
         return image
 
     left, top, right, bottom = box
-    if (right - left) < 20:
+    span = right - left
+    if span < 20:
         return image
 
     centre = (left + right) / 2.0
-    gap = (right - left) * OPEN_FRONT_GAP_RATIO
+    full_gap = span * OPEN_FRONT_GAP_RATIO
+    garment_height = max(1, bottom - top)
 
     canvas = Image.new("RGBA", (width, height), (0, 0, 0, 0))
 
-    left_w = max(1, int(round((centre - left) - gap / 2)))
-    left_piece = image.crop((left, 0, int(round(centre)), height))
-    left_piece = left_piece.resize((left_w, height), Image.LANCZOS)
-    canvas.alpha_composite(left_piece, (int(left), 0))
+    def paste_band(y0, y1, gap):
+        if y1 <= y0:
+            return
+        if gap <= 0.5:
+            canvas.alpha_composite(image.crop((0, y0, width, y1)), (0, y0))
+            return
+        left_w = max(1, int(round((centre - left) - gap / 2)))
+        left_piece = image.crop((left, y0, int(round(centre)), y1))
+        left_piece = left_piece.resize((left_w, y1 - y0), Image.LANCZOS)
+        canvas.alpha_composite(left_piece, (int(left), y0))
 
-    right_w = max(1, int(round((right - centre) - gap / 2)))
-    right_piece = image.crop((int(round(centre)), 0, right, height))
-    right_piece = right_piece.resize((right_w, height), Image.LANCZOS)
-    canvas.alpha_composite(right_piece, (int(right) - right_w, 0))
+        right_w = max(1, int(round((right - centre) - gap / 2)))
+        right_piece = image.crop((int(round(centre)), y0, right, y1))
+        right_piece = right_piece.resize((right_w, y1 - y0), Image.LANCZOS)
+        canvas.alpha_composite(right_piece, (int(right) - right_w, y0))
+
+    collar_y = top + int(garment_height * OPEN_FRONT_COLLAR_END)
+    ramp_y = top + int(garment_height * OPEN_FRONT_RAMP_END)
+
+    paste_band(top, collar_y, 0)  # the collar itself - untouched
+
+    band_height = max(1, (ramp_y - collar_y) // OPEN_FRONT_RAMP_BANDS)
+    y = collar_y
+    while y < ramp_y:
+        y_end = min(ramp_y, y + band_height)
+        midpoint = ((y + y_end) / 2 - collar_y) / max(1, (ramp_y - collar_y))
+        paste_band(y, y_end, full_gap * _smoothstep(midpoint))
+        y = y_end
+
+    paste_band(ramp_y, bottom, full_gap)
 
     return canvas
 
