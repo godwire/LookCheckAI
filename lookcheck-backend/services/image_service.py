@@ -303,9 +303,9 @@ def _smoothstep(u):
 
 
 def open_front(image):
-    """A second cut-out of the same garment, split down the centre below the
-    collar with each half slid toward its own outer edge - a jacket or
-    cardigan shown open, for laying a lighter piece underneath it in the gap.
+    """A second cut-out of the same garment, split down the centre with each
+    half slid toward its own outer edge - a jacket or cardigan shown open,
+    for laying a lighter piece underneath it in the gap.
 
     This is not generation: nothing is invented or redrawn. Each half is
     rescaled horizontally toward the edge the camera already placed it at (a
@@ -313,15 +313,18 @@ def open_front(image):
     the centre seam, which is where the zip or buttons run and is usually a
     single fabric colour, is compressed to open a gap.
 
-    The gap is not constant from top to bottom. A stand-up or mock-neck
-    collar is a closed loop of fabric seamed at the back of the neck - it
-    doesn't split into two flaps the way the body of an unzipped jacket does.
-    Splitting the whole height evenly (an earlier version of this function
-    did exactly that) tore the collar in half along with the placket, which
-    reads as damage, not as "unzipped". So the top slice, roughly the collar,
-    is left untouched, and the gap widens smoothly from nothing to its full
-    width over a short band below it - the collar sits closed, the opening
-    starts right where a real one would, at the neckline seam.
+    The gap is not constant from top to bottom - it is zero at the very top
+    pixel and widens smoothly from there. A stand-up collar is fabric seamed
+    into one continuous loop at the back of the neck; only its front, where
+    the zip runs, actually separates. A photo only shows the front, so that
+    back seam is a single point in the picture - the top-centre of the
+    collar - and the two halves stay pinned together exactly there, fanning
+    open below it the way the real collar would. An earlier version instead
+    left a flat closed band across the whole collar untouched, which looked
+    like the collar had been glued shut rather than merely unzipped; splitting
+    the full height at one constant gap, tried before that, tore the collar
+    into two loose flaps with no connection at all. Neither reads as "worn
+    open" the way pinning the halves at one point and fanning them does.
 
     An even earlier version rotated each half open around a pivot at the
     hem, the way a real door swings. It looked broken: a sleeve sits far
@@ -362,16 +365,15 @@ def open_front(image):
         right_piece = right_piece.resize((right_w, y1 - y0), Image.LANCZOS)
         canvas.alpha_composite(right_piece, (int(right) - right_w, y0))
 
-    collar_y = top + int(garment_height * OPEN_FRONT_COLLAR_END)
     ramp_y = top + int(garment_height * OPEN_FRONT_RAMP_END)
 
-    paste_band(top, collar_y, 0)  # the collar itself - untouched
-
-    band_height = max(1, (ramp_y - collar_y) // OPEN_FRONT_RAMP_BANDS)
-    y = collar_y
+    # The ramp starts at the very top pixel with a zero gap - the two halves
+    # are pinned together there - and widens smoothly down to the full gap.
+    band_height = max(1, (ramp_y - top) // OPEN_FRONT_RAMP_BANDS)
+    y = top
     while y < ramp_y:
         y_end = min(ramp_y, y + band_height)
-        midpoint = ((y + y_end) / 2 - collar_y) / max(1, (ramp_y - collar_y))
+        midpoint = ((y + y_end) / 2 - top) / max(1, (ramp_y - top))
         paste_band(y, y_end, full_gap * _smoothstep(midpoint))
         y = y_end
 

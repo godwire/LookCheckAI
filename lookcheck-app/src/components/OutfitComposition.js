@@ -348,20 +348,26 @@ function computeLayout(items, aspects, openAspects) {
   }
 
   // A base layer sits under the piece over it. With an open-front torso
-  // there's an actual gap to show it in, so it's placed at close to the
-  // torso's own size and position. Otherwise it falls back to a shallow band
-  // at the collar - see BASE_LAYER_BAND above for why the full garment isn't
-  // laid out in that case.
+  // there's an actual gap to show it in, so it's given exactly the torso's
+  // own box - same size, same position - rather than a size worked out from
+  // its own photo. Two different photos are almost never shot at the same
+  // proportions, and sizing the base layer from its own would leave it
+  // either poking out past the jacket's silhouette or falling short of the
+  // gap it's meant to fill. Filling the torso's own box, cropped to match
+  // (`cover`, not `contain`) keeps it exactly as large as the piece over it
+  // and never wider - which is what actually reads as "the same size",
+  // even at the cost of a sliver of the base layer's own photo being cropped
+  // off. Otherwise it falls back to a shallow band at the collar - see
+  // BASE_LAYER_BAND above for why the full garment isn't laid out that way.
   if (baseLayer && torso && aspects[baseLayer.id]) {
     if (useOpenFront) {
-      const width = torso.width * OPEN_FRONT_BASE_WIDTH;
-      const height = (width * CANVAS_RATIO) / aspects[baseLayer.id];
       placed.push({
         item: baseLayer,
-        left: 0.5 - width / 2,
+        left: torso.left,
         top: torso.top,
-        width,
-        height,
+        width: torso.width,
+        height: torso.height,
+        cover: true,
         rotate: '0deg',
         z: torso.z - 1,
       });
@@ -474,7 +480,7 @@ export default function OutfitComposition({ items, style }) {
           const image = (
             <Image
               source={{ uri: resolveImageUrl(entry.imageUrl || entry.item.cutout_url) }}
-              resizeMode="contain"
+              resizeMode={entry.cover ? 'cover' : 'contain'}
               style={{
                 position: 'absolute',
                 left: 0,
